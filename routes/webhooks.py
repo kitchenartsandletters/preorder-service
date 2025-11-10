@@ -115,16 +115,21 @@ async def _handle(topic: str, request: Request,
     return Response(status_code=200)
 
 @router.post("/orders/create")
-async def orders_create(request: Request, **kw):  return await _handle("orders/create", request, **kw)
+async def orders_create(request: Request):
+    return await _handle("orders/create", request)
 
 @router.post("/orders/updated")
-async def orders_updated(request: Request, **kw): return await _handle("orders/updated", request, **kw)
+async def orders_updated(request: Request):
+    return await _handle("orders/updated", request)
 
 @router.post("/orders/cancelled")
-async def orders_cancelled(request: Request, **kw): return await _handle("orders/cancelled", request, **kw)
+async def orders_cancelled(request: Request):
+    return await _handle("orders/cancelled", request)
 
 @router.post("/products/update")
-async def products_update(request: Request, **kw): return await _handle("products/update", request, **kw)
+async def products_update(request: Request):
+    return await _handle("products/update", request)
 
 @router.post("/inventory-levels")
-async def inventory_levels(request: Request, **kw): return await _handle("inventory_levels/update", request, **kw)
+async def inventory_levels(request: Request):
+    return await _handle("inventory_levels/update", request)
