@@ -1,0 +1,11 @@
+from fastapi import FastAPI
+from routes.webhooks import router as webhooks_router
+from routes.approvals import router as approvals_router
+
+app = FastAPI(title="preorder-service")
+
+app.include_router(webhooks_router)
+app.include_router(approvals_router)
+
+@app.get("/healthz")
+def healthz(): return {"ok": True}
