@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Response, Header
+from fastapi import APIRouter, Request, Response, Header, HTTPException
 import os, hmac, hashlib, base64, json
 from typing import Optional
 import sys, os
@@ -37,7 +37,7 @@ async def _ingest(request: Request,
     if not ok:
         ok = _verify(raw, x_gateway_signature, GATEWAY_HMAC_SECRET)
     if not ok:
-        raise Response(status_code=401)
+        raise HTTPException(status_code=401, detail="Invalid HMAC signature")
 
     payload = json.loads(raw.decode("utf-8"))
     headers = {
