@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Request, Response, Header
 import os, hmac, hashlib, base64, json
 from typing import Optional
-from ..db.connection import get_pool
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db.connection import get_pool
 
 router = APIRouter(prefix="/webhooks")
 
