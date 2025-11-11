@@ -62,8 +62,7 @@ async def _insert_tracking(pool, row: dict):
             status, approved, payload, headers, processed, processing_notes
         )
         values (
-            gen_random_uuid(),  -- id auto if not serial
-            %s, %s, %s,
+            %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s
@@ -72,7 +71,7 @@ async def _insert_tracking(pool, row: dict):
         row.get("event_id"),
         row.get("topic"),
         row.get("shop_domain"),
-        "gateway",  # source_service constant for now
+        "gateway",  # source_service
         row.get("order_id"),
         row.get("order_name"),
         row.get("customer_id"),
@@ -83,10 +82,10 @@ async def _insert_tracking(pool, row: dict):
         row.get("quantity"),
         row.get("pub_date"),
         row.get("status"),
-        False,  # approved default
+        False,  # approved
         json.dumps(row.get("payload")),
         json.dumps(row.get("headers")),
-        False,  # processed default
+        False,  # processed
         None    # processing_notes
     ))
 
