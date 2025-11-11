@@ -56,23 +56,38 @@ async def _ingest(request: Request,
 async def _insert_tracking(pool, row: dict):
     await pool.execute("""
         insert into preorder.tracking (
-            topic, shop_domain, order_id, customer_id, sku, product_id, variant_id,
-            event_id, source, status, payload, headers
+            event_id, topic, shop_domain, source_service,
+            order_id, order_name, customer_id, line_item_id,
+            product_id, variant_id, sku, quantity, pub_date,
+            status, approved, payload, headers, processed, processing_notes
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        values (
+            gen_random_uuid(),  -- id auto if not serial
+            %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s
+        )
     """, (
+        row.get("event_id"),
         row.get("topic"),
         row.get("shop_domain"),
+        "gateway",  # source_service constant for now
         row.get("order_id"),
+        row.get("order_name"),
         row.get("customer_id"),
-        row.get("sku"),
+        row.get("line_item_id"),
         row.get("product_id"),
         row.get("variant_id"),
-        row.get("event_id"),
-        row.get("source"),
+        row.get("sku"),
+        row.get("quantity"),
+        row.get("pub_date"),
         row.get("status"),
+        False,  # approved default
         json.dumps(row.get("payload")),
-        json.dumps(row.get("headers"))
+        json.dumps(row.get("headers")),
+        False,  # processed default
+        None    # processing_notes
     ))
 
 def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
