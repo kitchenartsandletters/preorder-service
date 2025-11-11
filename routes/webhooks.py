@@ -24,14 +24,18 @@ async def _ingest(request: Request,
                   x_gateway_event_id: Optional[str]) -> tuple[dict, dict]:
     raw = await request.body()
 
-    # Normalize FastAPI Header objects to strings
+    # Normalize all headers first
     x_shopify_hmac_sha256 = str(x_shopify_hmac_sha256 or "")
     x_shopify_topic = str(x_shopify_topic or "")
     x_shopify_shop_domain = str(x_shopify_shop_domain or "")
     x_gateway_signature = str(x_gateway_signature or "")
     x_gateway_event_id = str(x_gateway_event_id or "")
 
-    # 1) Verify Shopify first
+    # DEBUG: print for comparison
+    print("DEBUG x_gateway_signature:", x_gateway_signature)
+    print("DEBUG computed:", base64.b64encode(hmac.new(GATEWAY_HMAC_SECRET.encode(), raw, hashlib.sha256).digest()).decode())
+
+    # 1) Verify Shopify first (usually absent)
     ok = _verify(raw, x_shopify_hmac_sha256, SHOPIFY_API_SECRET)
     # 2) Fallback: verify gateway signature
     if not ok:
