@@ -4,6 +4,7 @@ from typing import Optional
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.connection import get_pool
+import uuid
 
 router = APIRouter(prefix="/webhooks")
 
@@ -132,7 +133,7 @@ async def _handle(topic: str, request: Request):
     facts_list = _extract_order_facts(topic, payload)
     for facts in facts_list:
         row = {
-            "event_id": x_gateway_event_id,
+            "event_id": x_gateway_event_id or str(uuid.uuid4()),
             "topic": x_shopify_topic or topic,
             "shop_domain": x_shopify_shop_domain,
             "order_id": facts.get("order_id"),
