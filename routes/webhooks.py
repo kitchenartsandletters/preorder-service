@@ -94,14 +94,22 @@ def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
         rows.append({"status": "pending"})
     return rows or [{"status": "pending"}]
 
-async def _handle(topic: str, request: Request,
-                  x_shopify_hmac_sha256: Optional[str] = Header(default=None),
-                  x_shopify_topic: Optional[str] = Header(default=None),
-                  x_shopify_shop_domain: Optional[str] = Header(default=None),
-                  x_gateway_signature: Optional[str] = Header(default=None),
-                  x_gateway_event_id: Optional[str] = Header(default=None)):
-    payload, headers = await _ingest(request, x_shopify_hmac_sha256, x_shopify_topic,
-                                     x_shopify_shop_domain, x_gateway_signature, x_gateway_event_id)
+async def _handle(topic: str, request: Request):
+    # extract actual header strings here
+    x_shopify_hmac_sha256 = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    x_shopify_topic = request.headers.get("X-Shopify-Topic", "")
+    x_shopify_shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    x_gateway_signature = request.headers.get("X-Gateway-Signature", "")
+    x_gateway_event_id = request.headers.get("X-Gateway-Event-ID", "")
+
+    payload, headers = await _ingest(
+        request,
+        x_shopify_hmac_sha256,
+        x_shopify_topic,
+        x_shopify_shop_domain,
+        x_gateway_signature,
+        x_gateway_event_id
+    )
     pool = await get_pool()
     facts_list = _extract_order_facts(topic, payload)
     for facts in facts_list:
