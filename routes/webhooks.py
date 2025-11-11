@@ -55,21 +55,25 @@ async def _ingest(request: Request,
 
 async def _insert_tracking(pool, row: dict):
     await pool.execute("""
-        insert into preorder.tracking
-        (event_id, external_delivery_id, topic, shop_domain, source_service, order_id, order_name,
-         customer_id, line_item_id, product_id, variant_id, sku, quantity, pub_date, status,
-         approved, payload, headers, processed, processing_notes)
-        values ($1,        null,               $2,    $3,         'webhook-gateway', $4,      $5,
-                $6,         $7,          $8,        $9,       $10, $11,     $12,      $13,
-                false,   $14,    $15,    false,    null)
-        on conflict (event_id) do nothing
-    """,
-    row.get("event_id"), row.get("topic"), row.get("shop_domain"),
-    row.get("order_id"), row.get("order_name"), row.get("customer_id"),
-    row.get("line_item_id"), row.get("product_id"), row.get("variant_id"),
-    row.get("sku"), row.get("quantity"), row.get("pub_date"),
-    row.get("status"), json.dumps(row.get("payload")), json.dumps(row.get("headers"))
+    insert into preorder.tracking (
+        topic, shop, order_id, customer_id, sku, product_id, variant_id,
+        event_id, source, status, payload, headers
     )
+    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+""", (
+    row.get("topic"),
+    row.get("shop"),
+    row.get("order_id"),
+    row.get("customer_id"),
+    row.get("sku"),
+    row.get("product_id"),
+    row.get("variant_id"),
+    row.get("event_id"),
+    row.get("source"),
+    row.get("status"),
+    json.dumps(row.get("payload")),
+    json.dumps(row.get("headers"))
+))
 
 def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
     # produce rows (one per line item) with minimal extracted facts
