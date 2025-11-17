@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, Response, Header, HTTPException
+from fastapi.responses import JSONResponse
 import os, hmac, hashlib, base64, json
 from typing import Optional
 import sys, os
@@ -155,7 +156,7 @@ async def _handle(topic: str, request: Request):
             "headers": headers
         }
         await _insert_tracking(pool, row)
-    return Response(status_code=200)
+    return JSONResponse({"status": "ok"})
 
 @router.post("/")
 async def catch_all_root(request: Request):
