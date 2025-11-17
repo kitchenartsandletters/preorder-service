@@ -157,6 +157,23 @@ async def _handle(topic: str, request: Request):
         await _insert_tracking(pool, row)
     return Response(status_code=200)
 
+@router.post("/")
+async def catch_all_root(request: Request):
+    """
+    Accepts POSTs sent to /webhooks with topic inferred from X-Shopify-Topic.
+    Gateway will POST to PREORDER_WEBHOOK_URL (ending with /webhooks) and include
+    X-Shopify-Topic so we can route appropriately.
+    """
+    topic = request.headers.get("X-Shopify-Topic", "")
+    if not topic:
+        raise HTTPException(status_code=400, detail="Missing X-Shopify-Topic header")
+
+    # Normalize slashes — gateway may send topics like "products/update"
+    normalized = topic.strip().lower()
+
+    # Dispatch to internal handler
+    return await _handle(normalized, request)
+
 @router.post("/orders/create")
 async def orders_create(request: Request):
     return await _handle("orders/create", request)
