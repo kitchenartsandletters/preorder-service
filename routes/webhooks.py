@@ -111,7 +111,7 @@ def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
                 "sku": li.get("sku"),
                 "quantity": li.get("quantity"),
                 "pub_date": None,     # fill later if you parse/store pub date elsewhere
-                "status": "presale" if topic == "orders/create" else "pending"
+                "status": "pending"
             })
     elif topic == "products/update":
         rows.append({"status": "pending"})
