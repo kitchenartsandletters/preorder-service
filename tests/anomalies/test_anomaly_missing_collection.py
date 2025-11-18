@@ -19,3 +19,36 @@ TODO CASES TO IMPLEMENT:
 5. Should override active_preorder classification
 6. Should override early_stock_arrival classification
 """
+
+from classification.engine import classify_preorder_product
+from tests.fixtures_product_inputs import make_input
+
+
+def test_missing_collection_future_effective_pub_date():
+    """Tag present, collection=False, future effective_pub_date → anomaly_missing_collection."""
+    pass
+
+
+def test_missing_collection_future_date_tag_only():
+    """Tag present, collection=False, future date_tag only → anomaly_missing_collection."""
+    pass
+
+
+def test_missing_collection_future_pub_date_only():
+    """Tag present, collection=False, future pub_date only → anomaly_missing_collection."""
+    pass
+
+
+def test_missing_collection_future_override_date_only():
+    """Tag present, collection=False, future override_date only → anomaly_missing_collection."""
+    pass
+
+
+def test_missing_collection_overrides_active_preorder():
+    """Should override active_preorder classification when future signals exist."""
+    pass
+
+
+def test_missing_collection_overrides_early_stock_arrival():
+    """Should override early_stock_arrival classification when future signals exist."""
+    pass

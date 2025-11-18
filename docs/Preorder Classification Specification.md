@@ -142,3 +142,64 @@ effective_pub_date: date | None
 - No Shopify writes  
 
 These are downstream concerns.
+
+                     ┌──────────────────────────┐
+                     │ START: classify(product) │
+                     └───────────────┬──────────┘
+                                     │
+                                     ▼
+                     ┌────────────────────────────────┐
+                     │ 1. CHECK FOR ANOMALIES FIRST   │
+                     └────────────────────────────────┘
+                        │
+                        ├── anomaly_missing_tag ?
+                        ├── anomaly_missing_collection ?
+                        ├── anomaly_pubdate_conflict ?
+                        ├── anomaly_override_conflict ?
+                        └── anomaly_multi_date_conflict ?
+                                │
+                                ├── YES → status = anomaly_*
+                                └── NO
+                                     │
+                                     ▼
+                     ┌────────────────────────────────────┐
+                     │ 2. EARLY STOCK ARRIVAL?            │
+                     └────────────────────────────────────┘
+                           Condition:
+                             - effective_pub_date > today
+                             - AND inventory > 0
+                           │
+                           ├── YES → status = early_stock_arrival
+                           └── NO
+                                │
+                                ▼
+                     ┌────────────────────────────────────────┐
+                     │ 3. ACTIVE PREORDER?                    │
+                     └────────────────────────────────────────┘
+                           Conditions:
+                             - any future-dated signal:
+                                * effective_pub_date > today
+                                * future date_tag
+                                * in_preorder_collection
+                                * preorder tag + future behavior
+                             - AND inventory <= 0
+                           │
+                           ├── YES → status = active_preorder
+                           └── NO
+                                │
+                                ▼
+                     ┌────────────────────────────────────────┐
+                     │ 4. HISTORICAL PREORDER?               │
+                     └────────────────────────────────────────┘
+                           Conditions:
+                             - 'preorder' in tags
+                             - all dates <= today
+                             - NOT in preorder collection
+                           │
+                           ├── YES → status = historical_preorder
+                           └── NO
+                                │
+                                ▼
+                     ┌────────────────────────────┐
+                     │ 5. NOT A PREORDER PRODUCT  │
+                     └────────────────────────────┘

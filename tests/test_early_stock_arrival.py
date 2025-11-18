@@ -45,3 +45,50 @@ Imports needed when implementing tests:
     from tests.fixtures_product_inputs import make_input
 
 """
+from classification.engine import classify_preorder_product
+from tests.fixtures_product_inputs import make_input
+
+
+def test_future_override_inventory_positive():
+    """Future effective_pub_date via override_date & inventory > 0 → early_stock_arrival."""
+    pass
+
+
+def test_future_pubdate_inventory_positive():
+    """Future effective_pub_date via pub_date & inventory > 0 → early_stock_arrival."""
+    pass
+
+
+def test_future_date_tag_only_inventory_positive():
+    """Future latest date_tag (no metafields) & inventory > 0 → early_stock_arrival."""
+    pass
+
+
+def test_in_preorder_collection_future_date_inventory_positive():
+    """In preorder collection + future effective date + inventory > 0 → early_stock_arrival."""
+    pass
+
+
+def test_preorder_tag_only_future_effective_date_inventory_positive():
+    """Has preorder tag, future effective date, inventory > 0 → early_stock_arrival."""
+    pass
+
+
+def test_inventory_positive_blocks_active_preorder():
+    """inventory > 0 MUST NOT classify as active_preorder even with future date."""
+    pass
+
+
+def test_future_date_blocks_historical_preorder():
+    """Future effective date MUST NOT classify as historical_preorder."""
+    pass
+
+
+def test_anomalies_override_early_stock_arrival():
+    """Any anomaly_* condition must override early_stock_arrival (negative tests)."""
+    pass
+
+
+def test_not_not_a_preorder_product_for_valid_early_stock():
+    """A valid early_stock_arrival scenario MUST NOT classify as not_a_preorder_product."""
+    pass

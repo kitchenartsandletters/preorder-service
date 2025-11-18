@@ -1,300 +1,292 @@
-Below is the complete, canonical test_matrix.md, fully aligned with Rev 3 of the preorder classification logic.
-
-Copy/paste this directly into your repository.
-This is now the frozen, authoritative test matrix for both the implementation and the pytest suite.
-
-⸻
-
-test_matrix.md
-
-Preorder-Service Classification Test Matrix (Rev 3 — FINAL FROZEN SPEC)
+# Preorder-Service Classification Test Matrix (Rev 3 — FINAL FROZEN SPEC)
 
 This document defines:
-	•	all classification categories
-	•	exact conditions
-	•	expected outputs
-	•	test coverage requirements
-	•	priority order
-	•	field-by-field semantics
+- all classification categories  
+- exact conditions  
+- expected outputs  
+- test coverage requirements  
+- priority order  
+- field-by-field semantics  
+- pytest cross-references  
 
-This is the final source of truth against which the classification engine must be tested.
+This is the **final source of truth** for preorder-service classification.
 
-⸻
+---
 
-0. Definitions & Parsing Rules
+## <details><summary>0. Definitions & Parsing Rules</summary>
 
-Date Sources
+### **Date Sources**
 
-Source	Format	Notes
-date_tags[]	MM-DD-YYYY	May contain 0, 1, or many tags representing pub-date history
-pub_date metafield	YYYY-MM-DD	Current official pub date unless superseded by override
-override_date metafield	YYYY-MM-DD	Takes precedence over all other sources
+| Source | Format | Notes |
+|--------|--------|-------|
+| `date_tags[]` | MM-DD-YYYY | 0–many tags indicating pub-date history |
+| `pub_date` metafield | YYYY-MM-DD | Current official pub date |
+| `override_date` metafield | YYYY-MM-DD | Takes precedence over all |
 
-Effective Pub Date Resolution (Rev 3)
+### **Effective Pub Date Resolution (Rev 3)**
 
 Choose ONE date using strict priority:
-	1.	If override_date exists → effective_pub_date = override_date
-	2.	Else if pub_date exists → effective_pub_date = pub_date
-	3.	Else if date_tags exist → effective_pub_date = latest date_tag
-	4.	Else → effective_pub_date = None
 
-Inventory Semantics
+1. If `override_date` exists → **override_date**  
+2. Else if `pub_date` exists → **pub_date**  
+3. Else if `date_tags` exist → **latest date_tag**  
+4. Else → **None**
 
-Inventory	Meaning
-> 0	Stock is physically present
-== 0	Standard preorder state — not yet arrived
-< 0	Oversold preorder — still preorder
+### **Inventory Semantics**
 
-For classification:
-	•	Preorder → inventory <= 0
-	•	Early stock arrival → inventory > 0
-	•	Historical → inventory may be any value
+| Inventory | Meaning |
+|----------|---------|
+| `> 0` | stock present |
+| `== 0` | standard preorder, not yet arrived |
+| `< 0` | oversold preorder |
 
-⸻
+**Classification semantics:**
+- preorder → `inventory <= 0`  
+- early stock arrival → `inventory > 0`  
+- historical → inventory ANY value  
 
-1. Priority Order (Rev 3 — Highest to Lowest)
-	1.	Anomalies (anomaly_*)
-	2.	Early Stock Arrival (early_stock_arrival)
-	3.	Active Preorder (active_preorder)
-	4.	Historical Preorder (historical_preorder)
-	5.	Not a Preorder Product (not_a_preorder_product) ← fallback
+</details>
 
-⸻
+---
 
-2. ANOMALIES (Highest Priority)
+## <details><summary>1. Priority Order (Rev 3 — Highest → Lowest)</summary>
 
-If ANY anomaly fires → no other category may be returned.
+1. **Anomalies** (`anomaly_*`)  
+2. **Early Stock Arrival** (`early_stock_arrival`)  
+3. **Active Preorder** (`active_preorder`)  
+4. **Historical Preorder** (`historical_preorder`)  
+5. **Not a Preorder Product** (`not_a_preorder_product`)  
 
-⸻
+</details>
 
-2.1 anomaly_missing_tag
+---
 
-Condition (ALL must be true)
-	•	in_preorder_collection == True
-	•	'preorder' NOT in tags
+## <details><summary>2. ANOMALIES (Highest Priority)</summary>
 
-Expected Output
+If ANY anomaly fires → return immediately.
 
+---
+
+### **2.1 anomaly_missing_tag**  
+**Test File:** `tests/anomalies/test_anomaly_missing_tag.py`
+
+**Condition**  
+- `in_preorder_collection == True`  
+- `'preorder'` NOT in tags  
+
+**Expected**
+```
 status = "anomaly_missing_tag"
-anomaly_type = "anomaly_missing_tag"
+```
 
-Test Scenarios
+---
 
-Scenario	Inputs
-Missing tag while in collection	collection=True AND missing tag
-Irrelevant: inventory	>0, 0, <0
-Irrelevant: dates	any
+### **2.2 anomaly_missing_collection**  
+**Test File:** `tests/anomalies/test_anomaly_missing_collection.py`
 
+**Condition**  
+- `'preorder'` in tags  
+- NOT in preorder collection  
+- At least one future signal  
 
-⸻
-
-2.2 anomaly_missing_collection
-
-Condition (ALL must be true)
-	•	'preorder' in tags
-	•	in_preorder_collection == False
-	•	At least one future signal from:
-	•	effective_pub_date > today
-	•	OR future pub_date, future override_date, or future date_tag
-
-Expected Output
-
+**Expected**
+```
 status = "anomaly_missing_collection"
+```
 
+---
 
-⸻
+### **2.3 anomaly_pubdate_conflict (Revised)**  
+**Test File:** `tests/anomalies/test_anomaly_pubdate_conflict.py`
 
-2.3 anomaly_pubdate_conflict (COMPLETELY REVISED)
+Trigger Patterns:
 
-Trigger Patterns
+- **Case A** – one tag, no override, pub_date != tag  
+- **Case B** – multiple tags, no override, pub_date != latest_tag  
+- **Case C** – pub_date/override disagree with latest_tag (unless override_conflict is more appropriate)
 
-Case A — Single Tag, No Override
-	•	len(date_tags) == 1
-	•	override_date is None
-	•	pub_date != date_tag
-
-Case B — Multiple Tags, No Override
-	•	len(date_tags) >= 2
-	•	override_date is None
-	•	pub_date exists
-	•	pub_date != latest_tag
-
-Case C — General Metafield/Tag Mismatch
-	•	Tags exist
-	•	pub_date or override_date exist
-	•	Neither matches the latest date_tag
-	•	AND the mismatch is not better classified as anomaly_override_conflict
-
-Expected Output
-
+**Expected**
+```
 status = "anomaly_pubdate_conflict"
+```
 
+---
 
-⸻
+### **2.4 anomaly_override_conflict**  
+**Test File:** `tests/anomalies/test_anomaly_override_conflict.py`
 
-2.4 anomaly_override_conflict
+Trigger Patterns:
+- override_date < pub_date  
+- override_date < latest_tag  
+- override older than any recorded official date  
 
-Trigger Patterns
-	•	override_date < pub_date
-	•	OR override_date < latest_tag
-	•	OR override is chronologically older than any known “official” date signal
-
-Expected Output
-
+**Expected**
+```
 status = "anomaly_override_conflict"
+```
 
+---
 
-⸻
+### **2.5 anomaly_multi_date_conflict (Revised)**  
+**Test File:** `tests/anomalies/test_anomaly_multi_date_conflict.py`
 
-2.5 anomaly_multi_date_conflict (REDEFINED)
+**Condition**
+- `len(date_tags) >= 2`  
+- `pub_date is None`  
+- `override_date is None`  
 
-Condition (ALL must be true)
-	•	len(date_tags) >= 2
-	•	pub_date is None
-	•	override_date is None
-
-Interpretation:
-
-Multiple historical pub dates exist but there is no canonical value (neither pub_date nor override_date is present to define the current one).
-
-Expected Output
-
+**Expected**
+```
 status = "anomaly_multi_date_conflict"
+```
 
+---
 
-⸻
+### **❌ Removed anomaly_inventory_contradiction**  
+**Test File:** `tests/anomalies/test_anomaly_inventory_contradiction.py` (deprecated placeholder)
 
-❌ Removed Anomaly from Rev 2
+Use **early_stock_arrival** instead.
 
-anomaly_inventory_contradiction is abolished.
-Use early_stock_arrival instead.
+</details>
 
-⸻
+---
 
-3. EARLY STOCK ARRIVAL (Second Priority)
+## <details><summary>3. EARLY STOCK ARRIVAL</summary>
 
-Condition (ALL must be true)
-	•	effective_pub_date > today
-	•	inventory > 0
-	•	no anomaly_* triggered
+**Test File:** `tests/test_early_stock_arrival.py`
 
-Expected Output
+**Condition**
+- `effective_pub_date > today`  
+- `inventory > 0`  
+- no anomalies  
 
+**Expected**
+```
 status = "early_stock_arrival"
+```
 
-Notes
+</details>
 
-This is NOT an anomaly — but it must be surfaced.
+---
 
-⸻
+## <details><summary>4. ACTIVE PREORDER</summary>
 
-4. ACTIVE PREORDER (Third Priority)
+**Test File:** `tests/test_active_preorder.py`
 
-Condition (ALL must be true)
+**Condition**
 
 A. At least one future-dated PREORDER signal:
-	•	effective_pub_date > today
-OR
-	•	A future date_tag (when no metafields)
-OR
-	•	in_preorder_collection == True
-OR
-	•	'preorder' in tags AND dates indicate future sale period
+- `effective_pub_date > today`
+- OR future date_tag (when no metafields)
+- OR in_preorder_collection == True
+- OR preorder tag + future behavior
 
-B. inventory <= 0
-C. Not early_stock_arrival
-**D. Not anomaly_*`
-Expected Output
+B. `inventory <= 0`  
+C. NOT early_stock_arrival  
+D. NOT anomaly_*  
 
+**Expected**
+```
 status = "active_preorder"
+```
 
+</details>
 
-⸻
+---
 
-5. HISTORICAL PREORDER (Fourth Priority)
+## <details><summary>5. HISTORICAL PREORDER</summary>
 
-Condition (ALL must be true)
-	•	'preorder' in tags
-	•	All dates are past:
-	•	If effective_pub_date exists → effective_pub_date <= today
-	•	Else → max(date_tags) <= today
-	•	in_preorder_collection == False
-	•	no anomaly_*
-	•	not early_stock_arrival
-	•	not active_preorder
-	•	inventory ANY value allowed (>0, 0, <0)
+**Test File:** `tests/test_historical_preorder.py`
 
-Expected Output
+**Condition**
+- `'preorder'` in tags  
+- all dates in past  
+- NOT in preorder collection  
+- no anomaly_*  
+- not active  
+- not early_stock_arrival  
+- inventory ANY value  
 
+**Expected**
+```
 status = "historical_preorder"
+```
 
+</details>
 
-⸻
+---
 
-6. NOT A PREORDER PRODUCT (Final Fallback)
+## <details><summary>6. NOT A PREORDER PRODUCT (Fallback)</summary>
 
-Condition (ALL must be true)
-	•	No anomaly_*
-	•	Not early_stock_arrival
-	•	Not active_preorder
-	•	Not historical_preorder
+**Test File:** `tests/test_not_a_preorder_product.py`
 
-Expected Output
+**Condition**
+- no anomaly_*  
+- not early_stock_arrival  
+- not active  
+- not historical  
 
+**Expected**
+```
 status = "not_a_preorder_product"
+```
 
-This covers the majority of the store catalog.
+</details>
 
-⸻
+---
 
-7. MASTER SUMMARY TABLE
+## <details><summary>7. MASTER SUMMARY TABLE</summary>
 
-Priority	Condition	Result
-1	Any anomaly rule matches	anomaly_*
-2	Future effective_pub_date AND inventory > 0	early_stock_arrival
-3	Future-signal AND inventory <= 0	active_preorder
-4	Preorder tag + dates past + not in collection	historical_preorder
-5	Everything else	not_a_preorder_product
+| Priority | Condition | Result |
+|----------|-----------|--------|
+| 1 | any anomaly_* | anomaly_* |
+| 2 | future effective pub date & inventory > 0 | early_stock_arrival |
+| 3 | future signal & inventory <= 0 | active_preorder |
+| 4 | preorder tag + dates past + not in collection | historical_preorder |
+| 5 | all else | not_a_preorder_product |
 
+</details>
 
-⸻
+---
 
-8. Test Coverage Requirements by Category
+## <details><summary>8. Test Coverage Requirements</summary>
 
-Anomalies
-	•	missing_tag
-	•	missing_collection
-	•	pubdate_conflict (rev’d rules)
-	•	override_conflict
-	•	multi_date_conflict (rev’d rules)
+### **Anomalies**
+- missing_tag  
+- missing_collection  
+- pubdate_conflict  
+- override_conflict  
+- multi_date_conflict  
 
-Status Types
-	•	early_stock_arrival
-	•	active_preorder
-	•	historical_preorder
-	•	not_a_preorder_product
+### **Statuses**
+- early_stock_arrival  
+- active_preorder  
+- historical_preorder  
+- not_a_preorder_product  
 
-Cross-category negatives
+### **Cross-Category Negative Tests**
+- future vs past dates  
+- inventory >0 vs <=0  
+- missing vs present metafields  
+- tag + collection interactions  
+- conflict prioritization  
 
-Each category must be tested against the others to prevent incorrect classification under:
-	•	future vs past date evaluation
-	•	inventory >0 vs <=0
-	•	missing vs present metafields
-	•	tag combinations
-	•	collection membership interactions
+</details>
 
-⸻
+---
 
-9. Date Resolution Test Matrix
+## <details><summary>9. Date Resolution Test Matrix</summary>
 
-available signals	chosen effective date	reason
-override only	override	highest priority
-override & pub_date	override	override wins
-pub_date only	pub_date	next priority
-no metafields + date_tags	latest date_tag	tags represent revision history
-no dates anywhere	None	cannot classify on date-based logic
+| Available Signals | Effective Date | Reason |
+|-------------------|----------------|--------|
+| override only | override | highest priority |
+| override + pub_date | override | override wins |
+| pub_date only | pub_date | next priority |
+| no metafields + date_tags | latest date_tag | tags record revision history |
+| no dates anywhere | None | cannot derive a pub date |
 
+</details>
 
-⸻
+---
 
-This file represents the final, locked specification for preorder-service classification.
+This file represents the **final, locked specification** for preorder-service classification.

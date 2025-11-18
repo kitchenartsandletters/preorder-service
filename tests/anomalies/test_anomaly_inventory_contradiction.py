@@ -1,14 +1,22 @@
 """
-test_anomaly_inventory_contradiction.py
+DEPRECATED TEST FILE — anomaly_inventory_contradiction
 
-Anomaly 4.6 — Future pub date but positive inventory (not yet marked as early arrival).
+As of Preorder Classification Spec Rev 3:
+
+There is NO LONGER an anomaly called `anomaly_inventory_contradiction`.
+
+Correct behavior:
+    - Future effective_pub_date + inventory > 0 → early_stock_arrival
+    - NOT an anomaly_*
+    - Should be tested in test_early_stock_arrival.py
+
+This file is retained temporarily so pytest does not break,
+but must contain no active test logic.
 
 TODO:
-- Future pub_date + inventory > 0 → anomaly_inventory_contradiction
-- Future override_date + inventory > 0 → anomaly
-- Future date_tag + inventory > 0 → anomaly
-- Validate against exceptions (later phase)
+- Remove this file entirely once the early_stock_arrival tests are implemented.
+- Do NOT write tests here. All inventory-related preorder logic
+  belongs in test_early_stock_arrival.py.
 """
 
-from classification.engine import classify_preorder_product
-from tests.fixtures_product_inputs import make_input
+# Intentionally no imports, no tests.
