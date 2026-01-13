@@ -1,0 +1,9 @@
+{
+  "run_id": "2026-01-13_174656",
+  "input_source": "inputs/Winter Spring 2026 Preorder - For Upload.csv",
+  "template": "inputs/preorder_products_export.csv",
+  "rows_total": 1,
+  "rows_ok": 1,
+  "rows_failed": 0,
+  "failures": []
+}

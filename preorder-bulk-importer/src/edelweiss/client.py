@@ -120,48 +120,56 @@ class EdelweissClient:
 
     def login(self) -> None:
         """
-        Edelweiss login UI can vary; we keep this intentionally conservative.
-        If needed, we can tighten selectors after first live run.
+        Log into Edelweiss using explicit, verified selectors.
+
+        If the login form is not visible, assume the session is already authenticated.
         """
         self.goto_home()
+        page = self.page
 
-        # Generic heuristics: look for email/username + password fields
-        # and a submit button.
-        # If your older script has exact selectors, we can swap them in.
-        self.page.wait_for_load_state("domcontentloaded")
-
-        # Try a few common patterns
-        user_candidates = [
-            "input[type='email']",
-            "input[name='email']",
-            "input[name='username']",
-            "input#username",
-        ]
-        pass_candidates = [
-            "input[type='password']",
-            "input[name='password']",
-            "input#password",
-        ]
-        submit_candidates = [
-            "button[type='submit']",
-            "button:has-text('Sign In')",
-            "button:has-text('Log In')",
+        email_sel = 'input[name="email"]'
+        password_sel = 'input[name="pword"]'
+        submit_sel_candidates = [
+            'button[type="submit"]',
+            'button:has-text("Sign In")',
+            'button:has-text("Log In")',
         ]
 
-        user_sel = next((s for s in user_candidates if self.page.locator(s).count() > 0), None)
-        pass_sel = next((s for s in pass_candidates if self.page.locator(s).count() > 0), None)
-
-        if not user_sel or not pass_sel:
-            # already logged in OR different login flow
+        # Check whether login form is visible
+        try:
+            page.wait_for_selector(email_sel, state="visible", timeout=5000)
+        except Exception:
+            # Login form not present → already logged in
             return
 
-        self.page.locator(user_sel).fill(self.cfg.user)
-        self.page.locator(pass_sel).fill(self.cfg.password)
+        # Ensure password field is visible
+        try:
+            page.wait_for_selector(password_sel, state="visible", timeout=5000)
+        except Exception:
+            self.screenshot("login", "password_not_visible")
+            raise RuntimeError("Password field not visible on Edelweiss login page.")
 
-        btn_sel = next((s for s in submit_candidates if self.page.locator(s).count() > 0), None)
-        if btn_sel:
-            self.page.locator(btn_sel).click()
-            self.page.wait_for_load_state("networkidle")
+        # Fill credentials
+        try:
+            page.fill(email_sel, self.cfg.user)
+            page.fill(password_sel, self.cfg.password)
+        except Exception:
+            self.screenshot("login", "fill_failed")
+            raise
+
+        # Submit form
+        for sel in submit_sel_candidates:
+            if page.locator(sel).count() > 0:
+                try:
+                    page.locator(sel).first.click()
+                    page.wait_for_load_state("networkidle")
+                    return
+                except Exception:
+                    continue
+
+        # If we get here, no submit button worked
+        self.screenshot("login", "submit_not_found")
+        raise RuntimeError("Could not find login submit button on Edelweiss page.")
 
     def search_isbn_and_open_title(self, isbn13: str) -> Tuple[Optional[str], bool]:
         """
