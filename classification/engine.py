@@ -20,6 +20,7 @@ from typing import Optional
 
 # Local imports – these must exist in the repo
 from .types import ClassificationInput, ClassificationResult
+from .utils import resolve_effective_pub_date
 
 
 def classify_preorder_product(product: ClassificationInput) -> ClassificationResult:
@@ -109,10 +110,96 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
     END OF TODO BLOCK — Do not modify until pytest suite is ready.
     """
 
+    # Phase 1: Effective publication date resolution (read-only wiring)
+    effective_pub_date = resolve_effective_pub_date(
+        date_tags=product.date_tags,
+        pub_date=product.pub_date,
+        override_date=product.override_date,
+    )
+
+    # Phase 2.1: anomaly_missing_tag
+    if product.in_preorder_collection and "preorder" not in product.tags:
+        # Placeholder fallback — will be replaced by business-state logic
+        return ClassificationResult(
+            status="not_a_preorder_product",
+            anomaly_type=None,
+            effective_pub_date=effective_pub_date,
+        )
+
+    # Phase 2.2: anomaly_missing_collection
+    has_preorder_tag = "preorder" in product.tags
+
+    if (
+        has_preorder_tag
+        and not product.in_preorder_collection
+        and effective_pub_date is not None
+        and effective_pub_date > date.today()
+    ):
+        return ClassificationResult(
+            status="anomaly_missing_collection",
+            anomaly_type="anomaly_missing_collection",
+            effective_pub_date=effective_pub_date,
+        )
+
+    # Phase 2.3: anomaly_override_conflict
+    if product.override_date is not None:
+        # Case 1: override earlier than pub_date
+        if product.pub_date is not None and product.override_date < product.pub_date:
+            return ClassificationResult(
+                status="anomaly_override_conflict",
+                anomaly_type="anomaly_override_conflict",
+                effective_pub_date=effective_pub_date,
+            )
+
+        # Case 2: override earlier than latest date_tag
+        if product.date_tags and product.override_date < max(product.date_tags):
+            return ClassificationResult(
+                status="anomaly_override_conflict",
+                anomaly_type="anomaly_override_conflict",
+                effective_pub_date=effective_pub_date,
+            )
+
+        # Case 3: override in the past while pub_date is in the future
+        if (
+            product.pub_date is not None
+            and product.override_date < date.today()
+            and product.pub_date > date.today()
+        ):
+            return ClassificationResult(
+                status="anomaly_override_conflict",
+                anomaly_type="anomaly_override_conflict",
+                effective_pub_date=effective_pub_date,
+            )
+
+    # Phase 2.4: anomaly_pubdate_conflict
+    # Applies only when override_date is absent (or non-conflicting)
+    if product.override_date is None and product.pub_date is not None and product.date_tags:
+        latest_tag = max(product.date_tags)
+
+        # Case A / B / C: pub_date disagrees with latest date_tag
+        if product.pub_date != latest_tag:
+            return ClassificationResult(
+                status="anomaly_pubdate_conflict",
+                anomaly_type="anomaly_pubdate_conflict",
+                effective_pub_date=effective_pub_date,
+            )
+
+    # Phase 2.5: anomaly_multi_date_conflict
+    if (
+        product.override_date is None
+        and product.pub_date is None
+        and len(product.date_tags) >= 2
+    ):
+        return ClassificationResult(
+            status="anomaly_multi_date_conflict",
+            anomaly_type="anomaly_multi_date_conflict",
+            effective_pub_date=effective_pub_date,
+        )
+
     # Placeholder output to keep the module importable and runnable.
     # This will be replaced after test-driven implementation begins.
     return ClassificationResult(
         status="anomaly_missing_tag",
         anomaly_type="not_implemented",
-        effective_pub_date=None,
+        effective_pub_date=effective_pub_date,
     )
