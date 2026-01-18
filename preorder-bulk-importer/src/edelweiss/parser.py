@@ -27,18 +27,59 @@ def _trim_seo_title(full_title: str) -> str:
     return full_title.strip()
 
 
-def _parse_on_sale_date(text: str) -> Tuple[Optional[str], Optional[str]]:
-    # On Sale Date: May 19, 2026
-    m = re.search(r"On Sale Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text)
-    if not m:
+def _parse_pub_date(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Edelweiss date semantics:
+
+    We want the product release date. Edelweiss may show multiple dates.
+
+    Priority order:
+      1) "On Sale Date: <Mon D, YYYY>"
+      2) "Pub Date: <Mon D, YYYY>"
+      3) A standalone pipe-delimited date token: "| <Mon D, YYYY> |"
+
+    Notes:
+      - "Ship Date" is not the release date and is ignored.
+      - Returns (YYYY-MM-DD, MM-DD-YYYY) or (None, None).
+    """
+    if not text:
         return (None, None)
-    raw = m.group(1).strip()
-    # Convert to YYYY-MM-DD + MM-DD-YYYY tag
-    try:
-        dt = datetime.strptime(raw, "%B %d, %Y")
-        return (dt.strftime("%Y-%m-%d"), dt.strftime("%m-%d-%Y"))
-    except Exception:
+
+    def _coerce(raw: str) -> Tuple[Optional[str], Optional[str]]:
+        raw = (raw or "").strip()
+        if not raw:
+            return (None, None)
+        for fmt in ("%B %d, %Y", "%b %d, %Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return (dt.strftime("%Y-%m-%d"), dt.strftime("%m-%d-%Y"))
+            except ValueError:
+                continue
         return (None, None)
+
+    # --- Stage 1: Explicit labels (preferred) ---
+    # Examples:
+    #   "On Sale Date: Feb 10, 2026"
+    #   "Pub Date: Mar 24, 2026"
+    m = re.search(
+        r"(On Sale Date|Pub Date):\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})",
+        text,
+    )
+    if m:
+        return _coerce(m.group(2))
+
+    # --- Stage 2: Standalone pipe-delimited date token ---
+    # Examples:
+    #   "| Feb 10, 2026 | On Sale Date: Feb 10, 2026 | Ship Date: Jan 14, 2026"
+    #   "| May 13, 2026 | Ship Date: Jun 4, 2026"
+    m = re.search(
+        r"\|\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\s*\|",
+        text,
+    )
+    if m:
+        return _coerce(m.group(1))
+
+    return (None, None)
 
 
 def _parse_price_usd(text: str) -> Optional[str]:
@@ -116,7 +157,17 @@ def extract_record_from_page(page: Page, isbn13: str, defaults: Defaults) -> Enr
     # Title
     title_el = page.locator(S.TITLE_TEXT)
     if title_el.count() > 0:
-        full_title = title_el.first.inner_text().replace("\xa0", " ").strip()
+        full_title = title_el.first.inner_text()
+
+        # Normalize whitespace and line breaks
+        full_title = full_title.replace("\xa0", " ")
+        full_title = re.sub(r"\s*\n\s*", ": ", full_title)
+        full_title = re.sub(r"\s{2,}", " ", full_title).strip()
+
+        # Strip trailing edition / bracketed metadata
+        # Examples: "(1st Edition)", "(1st Edition, New edition)", "[A Cookbook]"
+        full_title = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", full_title).strip()
+
         rec.title = full_title
         rec.seo_title = _trim_seo_title(full_title)
 
@@ -134,10 +185,11 @@ def extract_record_from_page(page: Page, isbn13: str, defaults: Defaults) -> Enr
 
     combined = " | ".join(dotdot_texts)
 
-    # Pub date from "On Sale Date"
-    pub_date, pub_tag = _parse_on_sale_date(combined)
+    # Pub date from "On Sale Date" or "Pub Date"
+    pub_date, pub_tag = _parse_pub_date(combined)
     rec.pub_date = pub_date
     rec.pub_date_tag = pub_tag
+    print(f"[debug] parsed pub_date={rec.pub_date} pub_tag={rec.pub_date_tag} for ISBN {isbn13}")
 
     # Price USD
     rec.price_usd = _parse_price_usd(combined)
