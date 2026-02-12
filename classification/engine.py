@@ -119,10 +119,9 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
 
     # Phase 2.1: anomaly_missing_tag
     if product.in_preorder_collection and "preorder" not in product.tags:
-        # Placeholder fallback — will be replaced by business-state logic
         return ClassificationResult(
-            status="not_a_preorder_product",
-            anomaly_type=None,
+            status="anomaly_missing_tag",
+            anomaly_type="anomaly_missing_tag",
             effective_pub_date=effective_pub_date,
         )
 
@@ -172,11 +171,11 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
             )
 
     # Phase 2.4: anomaly_pubdate_conflict
-    # Applies only when override_date is absent (or non-conflicting)
-    if product.override_date is None and product.pub_date is not None and product.date_tags:
+    # If pub_date disagrees with latest date_tag (regardless of override existence,
+    # since override conflicts are handled in Phase 2.3)
+    if product.pub_date is not None and product.date_tags:
         latest_tag = max(product.date_tags)
 
-        # Case A / B / C: pub_date disagrees with latest date_tag
         if product.pub_date != latest_tag:
             return ClassificationResult(
                 status="anomaly_pubdate_conflict",
@@ -196,10 +195,21 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
             effective_pub_date=effective_pub_date,
         )
 
-    # Placeholder output to keep the module importable and runnable.
-    # This will be replaced after test-driven implementation begins.
+    # Phase 3: early_stock_arrival
+    if (
+        effective_pub_date is not None
+        and effective_pub_date > date.today()
+        and product.inventory > 0
+    ):
+        return ClassificationResult(
+            status="early_stock_arrival",
+            anomaly_type=None,
+            effective_pub_date=effective_pub_date,
+        )
+
+    # Placeholder fallback — will be replaced by business-state logic
     return ClassificationResult(
-        status="anomaly_missing_tag",
-        anomaly_type="not_implemented",
+        status="not_a_preorder_product",
+        anomaly_type=None,
         effective_pub_date=effective_pub_date,
     )

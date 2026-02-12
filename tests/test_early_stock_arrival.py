@@ -49,46 +49,101 @@ from classification.engine import classify_preorder_product
 from tests.fixtures_product_inputs import make_input
 
 
+from datetime import date, timedelta
+
+
+TODAY = date.today()
+FUTURE_DATE = TODAY + timedelta(days=30)
+PAST_DATE = TODAY - timedelta(days=30)
+
+
+def _assert_early_stock(result):
+    assert result.status == "early_stock_arrival"
+    assert result.anomaly_type is None
+
+
 def test_future_override_inventory_positive():
-    """Future effective_pub_date via override_date & inventory > 0 → early_stock_arrival."""
-    pass
+    product = make_input(
+        override_date=FUTURE_DATE,
+        inventory=5,
+    )
+    result = classify_preorder_product(product)
+    _assert_early_stock(result)
 
 
 def test_future_pubdate_inventory_positive():
-    """Future effective_pub_date via pub_date & inventory > 0 → early_stock_arrival."""
-    pass
+    product = make_input(
+        pub_date=FUTURE_DATE,
+        inventory=10,
+    )
+    result = classify_preorder_product(product)
+    _assert_early_stock(result)
 
 
 def test_future_date_tag_only_inventory_positive():
-    """Future latest date_tag (no metafields) & inventory > 0 → early_stock_arrival."""
-    pass
+    product = make_input(
+        date_tags=[FUTURE_DATE],
+        inventory=3,
+    )
+    result = classify_preorder_product(product)
+    _assert_early_stock(result)
 
 
 def test_in_preorder_collection_future_date_inventory_positive():
-    """In preorder collection + future effective date + inventory > 0 → early_stock_arrival."""
-    pass
+    product = make_input(
+        in_preorder_collection=True,
+        pub_date=FUTURE_DATE,
+        inventory=8,
+    )
+    result = classify_preorder_product(product)
+    # anomaly_missing_tag should override early_stock_arrival
+    assert result.status == "anomaly_missing_tag"
 
 
 def test_preorder_tag_only_future_effective_date_inventory_positive():
-    """Has preorder tag, future effective date, inventory > 0 → early_stock_arrival."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        pub_date=FUTURE_DATE,
+        inventory=2,
+    )
+    result = classify_preorder_product(product)
+    # anomaly_missing_collection should override early_stock_arrival
+    assert result.status == "anomaly_missing_collection"
 
 
 def test_inventory_positive_blocks_active_preorder():
-    """inventory > 0 MUST NOT classify as active_preorder even with future date."""
-    pass
+    product = make_input(
+        pub_date=FUTURE_DATE,
+        inventory=4,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "active_preorder"
 
 
 def test_future_date_blocks_historical_preorder():
-    """Future effective date MUST NOT classify as historical_preorder."""
-    pass
+    product = make_input(
+        pub_date=FUTURE_DATE,
+        inventory=6,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "historical_preorder"
 
 
 def test_anomalies_override_early_stock_arrival():
-    """Any anomaly_* condition must override early_stock_arrival (negative tests)."""
-    pass
+    product = make_input(
+        in_preorder_collection=True,
+        tags=[],  # triggers anomaly_missing_tag
+        pub_date=FUTURE_DATE,
+        inventory=5,
+    )
+    result = classify_preorder_product(product)
+    assert result.status.startswith("anomaly_")
 
 
 def test_not_not_a_preorder_product_for_valid_early_stock():
-    """A valid early_stock_arrival scenario MUST NOT classify as not_a_preorder_product."""
-    pass
+    product = make_input(
+        pub_date=FUTURE_DATE,
+        inventory=7,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "not_a_preorder_product"
