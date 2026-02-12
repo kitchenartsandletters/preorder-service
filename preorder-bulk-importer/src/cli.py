@@ -10,8 +10,16 @@ from .models import EnrichedRecord, ImageAsset
 from .reporting.run_report import RunReport, RunContext, new_run_id
 from .reporting.anomalies import validate_record
 from .edelweiss.client import EdelweissClient
-from .edelweiss.parser import extract_record_from_page, extract_interior_image_urls
-from .edelweiss.images import download_images_for_record
+from .edelweiss.parser import extract_record_from_page
+from .edelweiss.images import (
+    download_images_for_record,
+    extract_interior_images,
+)
+from .utils.text import (
+    build_handle,
+    clean_edelweiss_body_html,
+    build_preorder_body,
+)
 
 
 def parse_isbns(args) -> List[str]:
@@ -22,15 +30,15 @@ def parse_isbns(args) -> List[str]:
     if args.input:
         candidates = read_candidates_from_csv(Path(args.input))
         return [c.isbn13 for c in candidates]
-    raise RuntimeError("No ISBN source provided. Use --input, --isbn-file, or --isbns.")
+    raise RuntimeError("No ISBN source provided. Use --input, --isbn-file, or --isbns.")    
 
-
-def build_rows_for_shopify_csv(rec: EnrichedRecord, template_columns: List[str]) -> Dict[str, str]:
+def build_rows_for_shopify_csv(rec: EnrichedRecord, template_columns: List[str]) -> List[Dict[str, str]]:
     """
     Canonical mapping for preorder_products_export.csv.
     Only writes values for columns that exist in the template.
     All unspecified columns are intentionally left blank.
     """
+    rows: List[Dict[str, str]] = []
     row: Dict[str, str] = {}
 
     def set_if(col: str, val) -> None:
@@ -38,7 +46,7 @@ def build_rows_for_shopify_csv(rec: EnrichedRecord, template_columns: List[str])
             row[col] = "" if val is None else str(val)
 
     # --- Core product fields ---
-    set_if("Handle", "")
+    set_if("Handle", rec.handle)
     set_if("Title", rec.title)
     set_if("Body (HTML)", rec.body_html)
     set_if("Vendor", rec.vendor)
@@ -65,15 +73,18 @@ def build_rows_for_shopify_csv(rec: EnrichedRecord, template_columns: List[str])
     set_if("Variant Fulfillment Service", "manual")
     set_if("Variant Requires Shipping", "TRUE")
     set_if("Variant Taxable", "TRUE")
+    set_if("Variant Tax Code", "4901.99")
 
     # 5 lb → grams (rounded)
     set_if("Variant Grams", 2268)
     set_if("Variant Weight Unit", "lb")
 
-    # --- Images (cover only) ---
+    cdn_prefix = "https://cdn.shopify.com/s/files/1/0297/5046/0549/files/"
+
+    # Cover image (position 1)
     cover = next((a for a in rec.images if a.kind == "cover"), None)
     if cover:
-        set_if("Image Src", cover.src_url)
+        set_if("Image Src", f"{cdn_prefix}{rec.isbn13}.jpg")
         set_if("Image Position", 1)
         alt = rec.seo_title or rec.title or ""
         set_if("Image Alt Text", f"Book Cover: {alt}".strip())
@@ -89,13 +100,30 @@ def build_rows_for_shopify_csv(rec: EnrichedRecord, template_columns: List[str])
 
     # --- Custom metafields ---
     set_if("Author (product.metafields.custom.author)", rec.authors_display)
+    set_if(
+        "Canonical Handle (product.metafields.custom.canonical_handle)",
+        rec.canonical_handle,
+    )
     set_if("Binding (product.metafields.custom.binding)", rec.binding_label)
     set_if("Language (product.metafields.custom.language)", "English")
     set_if("Publication Date (product.metafields.custom.pub_date)", rec.pub_date)
 
-    # Canonical handle, inventory log, preorder override, etc. intentionally blank
+    # Append primary (cover) row
+    rows.append(row)
 
-    return row
+    # Interior images (positions 2–6)
+    interiors = [a for a in rec.images if a.kind == "interior"][:5]
+    for idx, _asset in enumerate(interiors, start=2):
+        row_i: Dict[str, str] = {}
+
+        row_i["Handle"] = rec.handle
+        row_i["Image Src"] = f"{cdn_prefix}{rec.isbn13}-{idx - 1}.jpg"
+        row_i["Image Position"] = str(idx)
+        row_i["Image Alt Text"] = f"Interior image {idx - 1}"
+
+        rows.append(row_i)
+
+    return rows
 
 
 def run_scrape(args, mode_write_csv: bool) -> int:
@@ -162,25 +190,62 @@ def run_scrape(args, mode_write_csv: bool) -> int:
             if designation_map.get(isbn13):
                 rec.collections.append(designation_map[isbn13])
 
-            # Interior image URLs
-            try:
-                interior_urls = extract_interior_image_urls(ew.page, defaults.interior_images_limit)
-                for u in interior_urls:
-                    rec.images.append(ImageAsset(kind="interior", src_url=u))
-            except Exception:
-                # non-fatal; will be flagged if you decide it should be
-                pass
+            # --- Interior images ---
+            if activate_images_tab(ew.page):
+                try:
+                    interior_urls = extract_interior_images(
+                        ew.page,
+                        max_images=defaults.interior_images_limit,
+                    )
+                    for u in interior_urls:
+                        rec.images.append(ImageAsset(kind="interior", src_url=u))
+                except Exception as e:
+                    print(f"[images] interior extraction failed for {isbn13}: {e}")
+            else:
+                print(f"[images] skipping interior images for {isbn13} (IMAGES tab not activated)")
 
             # Download images
             if not args.no_images:
                 download_images_for_record(rec, paths.assets_dir, defaults)
 
+            # --- Normalize handle + canonical handle ---
+            rec.handle = build_handle(rec.title)
+            rec.canonical_handle = rec.handle
+
+            # --- Normalize publication date ---
+            # Ensure rec.pub_date is a date object or None
+            from datetime import date, datetime
+
+            if isinstance(rec.pub_date, str):
+                try:
+                    rec.pub_date = datetime.strptime(rec.pub_date, "%Y-%m-%d").date()
+                except Exception:
+                    rec.pub_date = None
+            elif not isinstance(rec.pub_date, date):
+                rec.pub_date = None
+
+            if rec.pub_date is None:
+                print(f"[warn] missing pub_date for ISBN {isbn13} (source: {rec.source_url})")
+
+            # --- Clean and wrap preorder body HTML ---
+            clean_body = clean_edelweiss_body_html(rec.body_html)
+            rec.body_html = build_preorder_body(clean_body, rec.pub_date)
+
             # Validate
             anomaly = validate_record(rec)
-            if anomaly:
+
+            if anomaly and not args.no_images:
                 anomaly.screenshot_path = ew.screenshot(isbn13, anomaly.stage)
                 report.rows_failed += 1
                 report.failures.append(anomaly)
+
+            elif anomaly and args.no_images:
+                # Cover-only / reconciliation mode:
+                # accept minimally valid records so CSV rows are still written
+                print(f"[warn] validation skipped for ISBN {isbn13} (no-images mode)")
+                report.rows_ok += 1
+                enriched.append(rec)
+
             else:
                 report.rows_ok += 1
                 enriched.append(rec)
@@ -200,12 +265,46 @@ def run_scrape(args, mode_write_csv: bool) -> int:
 
         rows: List[Dict[str, str]] = []
         for rec in enriched:
-            rows.append(build_rows_for_shopify_csv(rec, template_cols))
+            rows.extend(build_rows_for_shopify_csv(rec, template_cols))
 
         write_output_csv_using_template(template_path, out_path, rows)
 
     return 0
 
+def activate_images_tab(page) -> bool:
+    """
+    Reliably activate the IMAGES tab in the currently open Edelweiss drawer.
+    Returns True if activated, False otherwise.
+    """
+
+    try:
+        images_tab = page.locator(
+            '[role="tab"]',
+            has_text="Images"
+        )
+
+        if images_tab.count() == 0:
+            return False
+
+        # Click using Playwright's trusted click
+        images_tab.first.click()
+
+        # Wait until React confirms activation
+        page.wait_for_function(
+            """
+            () => {
+                const tab = [...document.querySelectorAll('[role="tab"]')]
+                    .find(t => t.textContent.trim() === 'Images');
+                return tab && tab.getAttribute('aria-selected') === 'true';
+            }
+            """,
+            timeout=3000
+        )
+
+        return True
+
+    except Exception:
+        return False
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="preorder-bulk-importer")
