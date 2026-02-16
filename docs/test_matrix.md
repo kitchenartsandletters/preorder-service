@@ -158,12 +158,18 @@ Use **early_stock_arrival** instead.
 **Condition**
 - `effective_pub_date > today`  
 - `inventory > 0`  
-- no anomalies  
+- AND product is structurally a preorder candidate:
+  - (`'preorder'` in tags OR `in_preorder_collection == True`)
+- AND no `anomaly_*` condition fires  
 
 **Expected**
 ```
 status = "early_stock_arrival"
 ```
+
+**Precedence Rule**  
+Early Stock Arrival is evaluated only AFTER all anomaly checks.  
+If any anomaly condition is true, the anomaly must override early_stock_arrival.
 
 </details>
 
@@ -174,16 +180,10 @@ status = "early_stock_arrival"
 **Test File:** `tests/test_active_preorder.py`
 
 **Condition**
-
-A. At least one future-dated PREORDER signal:
 - `effective_pub_date > today`
-- OR future date_tag (when no metafields)
-- OR in_preorder_collection == True
-- OR preorder tag + future behavior
-
-B. `inventory <= 0`  
-C. NOT early_stock_arrival  
-D. NOT anomaly_*  
+- `inventory <= 0`
+- NOT `early_stock_arrival`
+- NOT `anomaly_*`
 
 **Expected**
 ```
@@ -237,12 +237,23 @@ status = "not_a_preorder_product"
 
 ## <details><summary>7. MASTER SUMMARY TABLE</summary>
 
+### Structural Preorder Candidate Definition
+
+A product is considered structurally preorder-eligible when:
+
+- `'preorder'` in tags  
+  OR  
+- `in_preorder_collection == True`
+
+Statuses `early_stock_arrival` and `active_preorder` require structural preorder eligibility.  
+Otherwise the product falls through to `not_a_preorder_product` unless an anomaly fires.
+
 | Priority | Condition | Result |
 |----------|-----------|--------|
 | 1 | any anomaly_* | anomaly_* |
-| 2 | future effective pub date & inventory > 0 | early_stock_arrival |
-| 3 | future signal & inventory <= 0 | active_preorder |
-| 4 | preorder tag + dates past + not in collection | historical_preorder |
+| 2 | future effective pub date & inventory > 0 AND structurally preorder | early_stock_arrival |
+| 3 | future effective pub date & inventory <= 0 AND structurally preorder | active_preorder |
+| 4 | preorder tag + all dates past + not in collection | historical_preorder |
 | 5 | all else | not_a_preorder_product |
 
 </details>

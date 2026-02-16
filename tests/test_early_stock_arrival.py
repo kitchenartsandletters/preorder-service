@@ -64,6 +64,8 @@ def _assert_early_stock(result):
 
 def test_future_override_inventory_positive():
     product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
         override_date=FUTURE_DATE,
         inventory=5,
     )
@@ -73,6 +75,8 @@ def test_future_override_inventory_positive():
 
 def test_future_pubdate_inventory_positive():
     product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
         pub_date=FUTURE_DATE,
         inventory=10,
     )
@@ -82,6 +86,8 @@ def test_future_pubdate_inventory_positive():
 
 def test_future_date_tag_only_inventory_positive():
     product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
         date_tags=[FUTURE_DATE],
         inventory=3,
     )
@@ -142,6 +148,8 @@ def test_anomalies_override_early_stock_arrival():
 
 def test_not_not_a_preorder_product_for_valid_early_stock():
     product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
         pub_date=FUTURE_DATE,
         inventory=7,
     )

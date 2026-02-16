@@ -196,8 +196,13 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
         )
 
     # Phase 3: early_stock_arrival
+    structurally_preorder = (
+        "preorder" in product.tags or product.in_preorder_collection
+    )
+
     if (
-        effective_pub_date is not None
+        structurally_preorder
+        and effective_pub_date is not None
         and effective_pub_date > date.today()
         and product.inventory > 0
     ):
@@ -207,7 +212,40 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
             effective_pub_date=effective_pub_date,
         )
 
-    # Placeholder fallback — will be replaced by business-state logic
+    # Phase 4: active_preorder
+    if (
+        structurally_preorder
+        and effective_pub_date is not None
+        and effective_pub_date > date.today()
+        and product.inventory <= 0
+    ):
+        return ClassificationResult(
+            status="active_preorder",
+            anomaly_type=None,
+            effective_pub_date=effective_pub_date,
+        )
+
+    # Phase 5: historical_preorder
+    # Conditions:
+    #   - permanent 'preorder' tag present
+    #   - NOT in preorder collection
+    #   - effective_pub_date is None OR in the past
+    #   - no anomaly has fired (we are below anomaly section)
+    if (
+        "preorder" in product.tags
+        and not product.in_preorder_collection
+        and (
+            effective_pub_date is None
+            or effective_pub_date <= date.today()
+        )
+    ):
+        return ClassificationResult(
+            status="historical_preorder",
+            anomaly_type=None,
+            effective_pub_date=effective_pub_date,
+        )
+
+    # Phase 6: not_a_preorder_product (deterministic fallback)
     return ClassificationResult(
         status="not_a_preorder_product",
         anomaly_type=None,

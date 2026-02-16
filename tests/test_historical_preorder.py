@@ -11,52 +11,105 @@ A product MUST classify as historical_preorder when ALL are true:
     4. No anomaly_* conditions
     5. Not early_stock_arrival
     6. Inventory ANY VALUE is allowed (>0, =0, <0)
-
-TODO CASES TO IMPLEMENT:
-
-1. Tag present, past effective_pub_date, not in collection → historical_preorder
-2. Tag present, no metafields, max(date_tags) past → historical_preorder
-3. Tag present, no date info at all → historical_preorder
-4. Inventory > 0 still yields historical_preorder
-5. Inventory == 0 still yields historical_preorder
-6. Inventory < 0 still yields historical_preorder
-7. Historical_preorder blocked when an anomaly_* condition applies
 """
+
+from datetime import date, timedelta
 
 from classification.engine import classify_preorder_product
 from tests.fixtures_product_inputs import make_input
 
 
+TODAY = date.today()
+PAST_DATE = TODAY - timedelta(days=30)
+
+
+def _assert_historical(result):
+    assert result.status == "historical_preorder"
+    assert result.anomaly_type is None
+
+
 def test_tag_present_past_effective_pub_date_not_in_collection():
-    """Tag present, past effective_pub_date, not in collection → historical_preorder."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=PAST_DATE,
+        inventory=5,
+    )
+    result = classify_preorder_product(product)
+    _assert_historical(result)
 
 
 def test_tag_present_no_metafields_latest_date_tag_past():
-    """Tag present, no metafields, max(date_tags) past → historical_preorder."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        date_tags=[PAST_DATE],
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    _assert_historical(result)
 
 
 def test_tag_present_no_date_info_at_all():
-    """Tag present, no date_tags, no pub_date, no override_date → historical_preorder."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        date_tags=[],
+        pub_date=None,
+        override_date=None,
+        inventory=10,
+    )
+    result = classify_preorder_product(product)
+    _assert_historical(result)
 
 
 def test_inventory_positive_still_historical():
-    """Inventory > 0 still yields historical_preorder."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=PAST_DATE,
+        inventory=10,
+    )
+    result = classify_preorder_product(product)
+    _assert_historical(result)
 
 
 def test_inventory_zero_still_historical():
-    """Inventory == 0 still yields historical_preorder."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=PAST_DATE,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    _assert_historical(result)
 
 
 def test_inventory_negative_still_historical():
-    """Inventory < 0 still yields historical_preorder."""
-    pass
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=PAST_DATE,
+        inventory=-5,
+    )
+    result = classify_preorder_product(product)
+    _assert_historical(result)
 
 
 def test_anomaly_blocks_historical_preorder():
-    """Historical_preorder is blocked when an anomaly_* condition applies."""
-    pass
+    """
+    If an anomaly condition applies (e.g. missing collection with future date),
+    historical_preorder must NOT trigger.
+    """
+    future_date = TODAY + timedelta(days=30)
+
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=future_date,  # triggers anomaly_missing_collection
+        inventory=5,
+    )
+
+    result = classify_preorder_product(product)
+
+    assert result.status.startswith("anomaly_")
