@@ -56,39 +56,93 @@ The classifier determines a single `effective_pub_date` using priority:
 3. Else if date_tags exist → use the earliest valid date tag  
 4. Else → `effective_pub_date = None`
 
+If multiple date_tags exist, they must be sorted chronologically before resolution.
+Malformed or unparsable date tags are ignored for effective_pub_date resolution but may trigger anomalies.
+
 ---
 
 # 3. PREORDER STATE CATEGORIES (FINAL, AUTHORITATIVE)
 
-## 3.1 ACTIVE PREORDER  
-A product is an active preorder **if ANY of these are true**:
-- It is in the Preorder collection  
-- It has a preorder tag  
-- It has a date tag in the future  
-- It has `pub_date` or `override_date` in the future  
+## 3.1 STRUCTURAL PREORDER IDENTITY
 
-AND it has **no anomalies** (below).
+A product satisfies structural preorder identity if:
+	•	has_preorder_tag == True
+	AND
+	•	in_preorder_collection == True
 
-Definition:
-active_preorder = one_future_date_signal AND no_anomalies
+Both signals must be present and aligned.
+
+Date signals alone (future pub_date, override_date, or date_tags) do NOT establish preorder identity.
+
+If structural alignment is incomplete (tag without collection, or collection without tag), the product is classified as an anomaly.
+
+If neither structural signal is present, the product is classified as not_a_preorder_product, unless a defined anomaly condition explicitly applies (e.g., inventory contradiction).
+Structural identity is evaluated after anomaly detection.
 
 ---
 
-# 3.2 HISTORICAL PREORDER  
-A product was previously a preorder but is no longer:
-- Has permanent `'preorder'` tag  
-- All dates (override/pub/date_tag) are in the past  
-- Inventory is normal  
-- Not in the Preorder collection
+## 3.2 EARLY STOCK ARRIVAL
 
-Definition:  
-historical_preorder = preorder_tag AND all_dates_past AND not_in_preorder_collection
+A product is classified as early_stock_arrival when:
+	•	It satisfies structural preorder identity
+	•	effective_pub_date > today
+	•	inventory > 0
+	•	No anomalies are present
+
+Definition:
+   early_stock_arrival =
+      structurally_preorder
+      AND effective_pub_date > today
+      AND inventory > 0
+      AND no_anomalies
+
+This represents books that have physically arrived before their official publication date.
+
+## 3.3 ACTIVE PREORDER
+
+A product is classified as active_preorder when:
+	•	It satisfies structural preorder identity
+	•	effective_pub_date exists AND effective_pub_date > today
+	•	inventory <= 0
+	•	No anomalies are present
+
+Definition:
+
+   active_preorder =
+      structurally_preorder
+      AND effective_pub_date > today
+      AND inventory <= 0
+      AND no_anomalies
+
+Early stock arrival is evaluated before active_preorder.
+
+## 3.4 HISTORICAL PREORDER
+
+A product is classified as historical_preorder when:
+	•	has_preorder_tag == True
+	•	effective_pub_date is None OR effective_pub_date <= today
+	•	in_preorder_collection == False
+	•	No anomalies are present
+
+Inventory level does not affect historical classification.
+
+Definition:
+
+   historical_preorder =
+      has_preorder_tag
+      AND (effective_pub_date is None OR effective_pub_date <= today)
+      AND not in_preorder_collection
+      AND no_anomalies
+
+Historical classification is only valid when structural preorder identity is no longer satisfied.
+
 
 ---
 
 # 4. ANOMALY CATEGORIES (MUST BE FULLY IMPLEMENTED)
 
-Anomalies override active/historical classification.
+All anomaly states override active_preorder, early_stock_arrival, and historical_preorder classifications.
+Anomalies are evaluated before structural identity.
 
 ## 4.1 `anomaly_missing_tag`
 - Product **in** Preorder Collection  
@@ -116,20 +170,29 @@ Anomalies override active/historical classification.
 - Example: “07-01-2025” AND “03-01-2025”
 
 ## 4.6 `anomaly_inventory_contradiction`
-- Future pub date  
-- BUT Shopify shows positive inventory  
-- Not accounted for as early arrival exception  
+- Future pub date
+- Inventory > 0
+- BUT product does not satisfy structural preorder identity
+	•	(e.g., missing 'preorder' tag AND not in preorder collection)
+
+This anomaly applies only when effective_pub_date > today.
 
 ---
 
 # 5. FINAL CLASSIFICATION OUTPUT
 
 The classifier must return:
-{
-status: “active_preorder” | “historical_preorder” | “anomaly_*”,
-anomaly_type: str | None,
-effective_pub_date: date | None
-}
+   {
+   status: 
+      "active_preorder" |
+      "early_stock_arrival" |
+      "historical_preorder" |
+      "anomaly_*" |
+      "not_a_preorder_product",
+
+   anomaly_type: str | None,
+   effective_pub_date: date | None
+   }
 
 ---
 
@@ -156,16 +219,30 @@ These are downstream concerns.
                         ├── anomaly_missing_collection ?
                         ├── anomaly_pubdate_conflict ?
                         ├── anomaly_override_conflict ?
-                        └── anomaly_multi_date_conflict ?
+                        ├── anomaly_multi_date_conflict ?
+                        └── anomaly_inventory_contradiction ?
                                 │
                                 ├── YES → status = anomaly_*
                                 └── NO
                                      │
                                      ▼
                      ┌────────────────────────────────────┐
+                     │ STRUCTURAL PREORDER IDENTITY    │
+                     └────────────────────────────────────┘
+                           Condition:
+                             - has_preorder_tag
+                               AND
+                             - in_preorder_collection
+                           │
+                           ├── NO → not_a_preorder_product
+                           └── YES → continue
+                                │
+                                ▼
+                     ┌────────────────────────────────────┐
                      │ 2. EARLY STOCK ARRIVAL?            │
                      └────────────────────────────────────┘
                            Condition:
+                             - structurally_preorder
                              - effective_pub_date > today
                              - AND inventory > 0
                            │
@@ -177,12 +254,10 @@ These are downstream concerns.
                      │ 3. ACTIVE PREORDER?                    │
                      └────────────────────────────────────────┘
                            Conditions:
-                             - any future-dated signal:
-                                * effective_pub_date > today
-                                * future date_tag
-                                * in_preorder_collection
-                                * preorder tag + future behavior
-                             - AND inventory <= 0
+                             - structurally_preorder
+                             - effective_pub_date exists
+                             - effective_pub_date > today
+                             - inventory <= 0
                            │
                            ├── YES → status = active_preorder
                            └── NO

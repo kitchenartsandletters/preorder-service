@@ -1,60 +1,131 @@
 """
-ACTIVE PREORDER TESTS (Rev 3)
+ACTIVE PREORDER TESTS (Rev 4 — Strict Structural Alignment)
 
-A product MUST classify as active_preorder when ALL of the following are true:
+ACTIVE PREORDER REQUIRES:
 
-    1. At least one future-dated PREORDER signal:
-        - effective_pub_date > today
-        - OR a future date_tag when no metafields exist
-        - OR in_preorder_collection == True
-        - OR 'preorder' in tags AND not all dates are past
+    1. Structural alignment:
+        - 'preorder' in tags
+        - in_preorder_collection == True
 
-    2. inventory <= 0
-        - inventory == 0 (normal preorder)
-        - inventory < 0 (oversold preorder)
+    2. A valid FUTURE effective_pub_date
+        - override_date OR
+        - pub_date OR
+        - latest date_tag
 
-    3. No anomaly_* conditions match
-    4. Not in the early_stock_arrival condition (which requires inventory > 0)
+    3. inventory <= 0
 
-TODO CASES TO IMPLEMENT:
+    4. No anomaly_* conditions apply
+    5. Not early_stock_arrival (inventory must be <= 0)
 
-1. Future effective_pub_date & inventory = 0 → active_preorder
-2. Future effective_pub_date & inventory < 0 → active_preorder
-3. Future date_tag only (no metafields) & inventory <= 0 → active_preorder
-4. In preorder collection alone (no future dates) & inventory <= 0 → active_preorder
-5. Has preorder tag alone (no future dates) & inventory <= 0 → active_preorder
-6. Active preorder blocked when an anomaly_* condition applies
+Anything less than the above is NOT active_preorder.
 """
 
 from classification.engine import classify_preorder_product
 from tests.fixtures_product_inputs import make_input
 
+from datetime import date, timedelta
 
-def test_future_effective_pub_date_inventory_zero():
-    """Future effective_pub_date & inventory = 0 → active_preorder."""
-    pass
-
-
-def test_future_effective_pub_date_inventory_negative():
-    """Future effective_pub_date & inventory < 0 → active_preorder."""
-    pass
+FUTURE_DATE = date.today() + timedelta(days=30)
+PAST_DATE = date.today() - timedelta(days=30)
 
 
-def test_future_date_tag_only_inventory_zero():
-    """Future date_tag only (no metafields) & inventory <= 0 → active_preorder."""
-    pass
+# -----------------------------
+# VALID ACTIVE PREORDER CASES
+# -----------------------------
 
 
-def test_in_preorder_collection_inventory_zero():
-    """In preorder collection alone (no future dates) & inventory <= 0 → active_preorder."""
-    pass
+def test_tag_and_collection_future_pub_date_inventory_zero():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=FUTURE_DATE,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "active_preorder"
 
 
-def test_preorder_tag_only_inventory_zero():
-    """Has preorder tag alone (no future dates) & inventory <= 0 → active_preorder."""
-    pass
+def test_tag_and_collection_future_pub_date_inventory_negative():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=FUTURE_DATE,
+        inventory=-5,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "active_preorder"
 
 
-def test_anomaly_blocks_active_preorder():
-    """Active preorder is blocked when an anomaly_* condition applies."""
-    pass
+def test_tag_and_collection_future_date_tag_only_inventory_zero():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        date_tags=[FUTURE_DATE],
+        pub_date=None,
+        override_date=None,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "active_preorder"
+
+
+def test_tag_and_collection_future_override_inventory_zero():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        override_date=FUTURE_DATE,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "active_preorder"
+
+
+# -----------------------------
+# INVALID / GUARD CASES
+# -----------------------------
+
+
+def test_missing_collection_blocks_active():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=FUTURE_DATE,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "anomaly_missing_collection"
+
+
+def test_missing_tag_blocks_active():
+    product = make_input(
+        tags=[],
+        in_preorder_collection=True,
+        pub_date=FUTURE_DATE,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "anomaly_missing_tag"
+
+
+def test_no_future_date_blocks_active():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=PAST_DATE,
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "active_preorder"
+
+
+def test_no_date_metadata_blocks_active():
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=None,
+        override_date=None,
+        date_tags=[],
+        inventory=0,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "active_preorder"

@@ -301,3 +301,66 @@ Otherwise the product falls through to `not_a_preorder_product` unless an anomal
 ---
 
 This file represents the **final, locked specification** for preorder-service classification.
+
+---
+
+## <details><summary>10. Test Coverage Snapshot (v0.6 — Structural Strict State Machine)</summary>
+
+**Total Tests: 60**
+
+### Breakdown by Category
+
+**Anomalies (5 files)**
+- missing_tag
+- missing_collection
+- pubdate_conflict
+- override_conflict
+- multi_date_conflict
+
+**Core Statuses (4 files)**
+- early_stock_arrival
+- active_preorder
+- historical_preorder
+- not_a_preorder_product
+
+**Utility / Resolution**
+- effective_pub_date
+
+**Infrastructure Layer**
+- persistence (Supabase upsert logic)
+- orchestrator (domain → engine → persistence wiring)
+
+---
+
+### Coverage Guarantees
+
+The test suite guarantees:
+
+- All anomaly_* states are mutually exclusive and prioritized
+- Structural preorder eligibility is strictly enforced (tag + collection alignment)
+- Effective pub date resolution priority is deterministic
+- Future vs past behavior is fully covered
+- Inventory polarity (>0 vs <=0) is covered for all preorder states
+- Early stock arrival requires structural eligibility
+- Active preorder requires structural eligibility
+- Historical preorder strictly requires preorder tag + past dates
+- Persistence layer always performs deterministic upsert
+- Orchestrator layer is deterministic and batch-safe
+- Fallback behavior is explicitly tested
+
+---
+
+### Stability Marker
+
+This snapshot corresponds to:
+
+- README version: `v0.7-domain-orchestrator`
+- All tests passing (66/66)
+- Structural enforcement locked (tag + collection required for active / early states)
+- Persistence upsert implemented (preorder.product_status)
+- Clean domain layer established (no Shopify dependencies)
+- Deterministic orchestrator layer integrated
+
+Future revisions must update this section.
+
+</details>
