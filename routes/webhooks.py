@@ -3,11 +3,15 @@ from fastapi.responses import JSONResponse
 import os, hmac, hashlib, base64, json
 from typing import Optional
 import sys, os
+import logging
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.connection import get_pool
+from shopify_service import build_product_metadata_from_shopify
+from orchestrator import reclassify_single_product
 import uuid
 
 router = APIRouter(prefix="/webhooks")
+logger = logging.getLogger(__name__)
 
 SHOPIFY_API_KEY  = os.getenv("SHOPIFY_API_KEY", "")
 GATEWAY_HMAC_SECRET = os.getenv("GATEWAY_HMAC_SECRET", "")  # == gateway EXTERNAL_HMAC_SECRET
@@ -96,6 +100,91 @@ async def _insert_tracking(pool, row: dict):
     await pool.commit()
     print(f"✅ Commit complete for event_id={row.get('event_id')}")
 
+async def _process_product_update(payload: dict):
+    """
+    Fetch authoritative Shopify product state and reclassify.
+    This is synchronous by design (v1 simplicity).
+    """
+    product_id = payload.get("id")
+    logger.info(f"[Webhook] products/update received for product_id={product_id}")
+    if not product_id:
+        return
+
+    try:
+        # 1. Fetch full Shopify product (GraphQL)
+        product_metadata = await build_product_metadata_from_shopify(product_id)
+
+        logger.info(
+            f"[Classification] Product metadata resolved for product_id={product_id} "
+            f"tags={product_metadata.tags if product_metadata else None}"
+        )
+
+        if not product_metadata:
+            return
+
+        # 2. Reclassify + persist
+        pool = await get_pool()
+        result = await reclassify_single_product(
+            supabase=pool,
+            product_metadata=product_metadata,
+            engine_version="v1",
+        )
+
+        logger.info(
+            f"[Classification] Completed for product_id={product_id} "
+            f"status={result.get('status')} anomaly={result.get('anomaly_type')}"
+        )
+
+    except Exception as e:
+        # Never break webhook response because of classification failure
+        print(f"⚠️ Reclassification failed for product_id={product_id}: {e}")
+
+async def _process_inventory_update(payload: dict):
+    """
+    Fetch authoritative Shopify product state from an inventory update
+    and reclassify the associated product.
+    """
+    inventory_item_id = payload.get("inventory_item_id")
+    logger.info(
+        f"[Webhook] inventory_levels/update received for inventory_item_id={inventory_item_id}"
+    )
+    if not inventory_item_id:
+        return
+
+    try:
+        # Build metadata by resolving inventory_item → product via Shopify
+        product_metadata = await build_product_metadata_from_shopify(
+            inventory_item_id=inventory_item_id
+        )
+
+        logger.info(
+            f"[Classification] Product resolved from inventory_item_id={inventory_item_id} "
+            f"product_id={product_metadata.product_id if product_metadata else None}"
+        )
+
+        if not product_metadata:
+            return
+
+        pool = await get_pool()
+        result = await reclassify_single_product(
+            supabase=pool,
+            product_metadata=product_metadata,
+            engine_version="v1",
+        )
+
+        logger.info(
+            f"[Classification] Completed for inventory_item_id={inventory_item_id} "
+            f"product_id={result.get('product_id')} "
+            f"status={result.get('status')} anomaly={result.get('anomaly_type')}"
+        )
+
+    except Exception as e:
+        print(
+            f"⚠️ Reclassification failed for inventory_item_id="
+            f"{inventory_item_id}: {e}"
+        )
+
+
 def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
     # produce rows (one per line item) with minimal extracted facts
     rows = []
@@ -135,6 +224,10 @@ async def _handle(topic: str, request: Request):
         x_gateway_signature,
         x_gateway_event_id
     )
+    logger.info(
+        f"[Webhook] Received topic={topic} shop={headers.get('X-Shopify-Shop-Domain')} "
+        f"event_id={headers.get('X-Gateway-Event-ID')}"
+    )
     pool = await get_pool()
     facts_list = _extract_order_facts(topic, payload)
     for facts in facts_list:
@@ -156,6 +249,11 @@ async def _handle(topic: str, request: Request):
             "headers": headers
         }
         await _insert_tracking(pool, row)
+    # Reclassify once per webhook event (not per line item)
+    if topic == "products/update":
+        await _process_product_update(payload)
+    elif topic == "inventory_levels/update":
+        await _process_inventory_update(payload)
     return JSONResponse({"status": "ok"})
 
 @router.post("/")
