@@ -9,7 +9,7 @@ import uuid
 
 router = APIRouter(prefix="/webhooks")
 
-SHOPIFY_API_SECRET  = os.getenv("SHOPIFY_API_SECRET", "")
+SHOPIFY_API_KEY  = os.getenv("SHOPIFY_API_KEY", "")
 GATEWAY_HMAC_SECRET = os.getenv("GATEWAY_HMAC_SECRET", "")  # == gateway EXTERNAL_HMAC_SECRET
 
 def _verify(raw: bytes, header_sig: Optional[str], secret: str) -> bool:
@@ -38,7 +38,7 @@ async def _ingest(request: Request,
     print("DEBUG computed:", base64.b64encode(hmac.new(GATEWAY_HMAC_SECRET.encode(), raw, hashlib.sha256).digest()).decode())
 
     # 1) Verify Shopify first (usually absent)
-    ok = _verify(raw, x_shopify_hmac_sha256, SHOPIFY_API_SECRET)
+    ok = _verify(raw, x_shopify_hmac_sha256, SHOPIFY_API_KEY)
     # 2) Fallback: verify gateway signature
     if not ok:
         ok = _verify(raw, x_gateway_signature, GATEWAY_HMAC_SECRET)
