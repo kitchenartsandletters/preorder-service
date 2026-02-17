@@ -100,3 +100,27 @@ def batch_reclassify(
             continue
 
     return results
+
+# --- Webhook entry point ---
+
+async def reclassify_single_product(
+    supabase,
+    product_metadata: ProductMetadata,
+    engine_version: str = "v1",
+) -> ClassificationResult:
+    """
+    Async-safe wrapper used by webhook layer.
+
+    This keeps webhook routes simple while preserving
+    deterministic classification behavior.
+    """
+
+    # Currently classification itself is synchronous.
+    # This wrapper exists for architectural symmetry and
+    # future async expansion (e.g., external lookups).
+
+    return classify_and_persist_product(
+        supabase=supabase,
+        product_metadata=product_metadata,
+        engine_version=engine_version,
+    )
