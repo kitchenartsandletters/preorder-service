@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from domain_models import ProductMetadata
 
 
-DATE_TAG_RE = re.compile(r"^\d{2}-\d{2}-\d{4}$")
+DATE_TAG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 PRODUCT_FULL_QUERY = """
@@ -136,45 +136,90 @@ async def fetch_product_payload(
     return product
 
 
+INVENTORY_ITEM_TO_PRODUCT_QUERY = """
+query InventoryItemToProduct($id: ID!) {
+  inventoryItem(id: $id) {
+    variant {
+      product {
+        id
+      }
+    }
+  }
+}
+"""
+
+
 async def build_product_metadata_from_shopify(
-    client: Any,
-    product_id: int,
+    *,
+    product_id: Optional[int] = None,
+    inventory_item_id: Optional[int] = None,
+    client: Any = None,
 ) -> ProductMetadata:
     """
-    Pure domain shaping:
     Shopify → ProductMetadata
-
+    Supports:
+    - product_id
+    - inventory_item_id (resolves to product_id first)
     No persistence.
     No classification.
     No Supabase.
     """
+    if client is None:
+        raise ValueError("client must be provided")
+    if product_id is None and inventory_item_id is None:
+        raise ValueError("Either product_id or inventory_item_id must be provided")
+
+    if product_id is None and inventory_item_id is not None:
+        # Resolve product_id from inventory_item_id
+        inventory_gid = f"gid://shopify/InventoryItem/{int(inventory_item_id)}"
+        resp = await _graphql(
+            client,
+            INVENTORY_ITEM_TO_PRODUCT_QUERY,
+            {"id": inventory_gid},
+        )
+        data = resp.get("data") if isinstance(resp, dict) else None
+        inventory_item = None
+        if isinstance(data, dict):
+            inventory_item = data.get("inventoryItem")
+        elif isinstance(resp, dict):
+            inventory_item = resp.get("inventoryItem")
+        if not inventory_item:
+            raise ValueError(f"Inventory item not found: {inventory_item_id}")
+        product_gid = (
+            (inventory_item.get("variant") or {})
+            .get("product", {})
+            .get("id")
+        )
+        if not product_gid:
+            raise ValueError(f"Could not resolve product from inventory_item_id={inventory_item_id}")
+        product_id = int(product_gid.split("/")[-1])
+
+    # Fetch full product
     product = await fetch_product_payload(client=client, product_id=product_id)
-
-    tags = _split_tags(product.get("tags"))
-
-    collection_nodes = (product.get("collections") or {}).get("nodes") or []
-    collection_handles = [str(c.get("handle")).strip() for c in collection_nodes if c.get("handle")]
+    collection_nodes = product.get("collections", {}).get("nodes", [])
+    collection_handles = [
+        str(c.get("handle")).strip()
+        for c in collection_nodes
+        if c.get("handle")
+    ]
     in_preorder_collection = _is_in_preorder_collection(collection_handles)
-
-    date_tags_raw = _extract_date_tags_raw(tags)
-
-    variant_nodes = (product.get("variants") or {}).get("nodes") or []
-    inventory = _sum_inventory(variant_nodes)
-
-    metafield_nodes = (product.get("metafields") or {}).get("nodes") or []
-
-    # Your stated Shopify override metafield
-    override_date_raw = _metafield_value(metafield_nodes, "preorder_override_date")
-
-    # Optional pub date metafield if present in your shop
-    pub_date_raw = _metafield_value(metafield_nodes, "pub_date")
-
+    metafield_nodes = product.get("metafields", {}).get("nodes", [])
+    override_date_raw = _metafield_value(
+        metafield_nodes,
+        "preorder_override_date",
+    )
+    pub_date_raw = _metafield_value(
+        metafield_nodes,
+        "pub_date",
+    )
     return ProductMetadata(
-        product_id=int(product_id),
-        tags=tags,
+        product_id=product_id,
+        tags=_split_tags(product.get("tags")),
         in_preorder_collection=in_preorder_collection,
-        date_tags_raw=date_tags_raw,
-        pub_date_raw=pub_date_raw,
         override_date_raw=override_date_raw,
-        inventory=int(inventory),
+        pub_date_raw=pub_date_raw,
+        date_tags_raw=_extract_date_tags_raw(_split_tags(product.get("tags"))),
+        inventory=_sum_inventory(
+            product.get("variants", {}).get("nodes", [])
+        )
     )

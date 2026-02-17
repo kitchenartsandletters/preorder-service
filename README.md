@@ -211,11 +211,30 @@ Status: COMPLETE
 
 ---
 
-## ⏳ Phase 8 — Admin Dashboard Integration
-- Display product classification
-- Surface anomalies
-- Support override review
-- Support manual reclassification
+## ✅ Phase 8 — Reclassification API Layer (Admin / Internal)
+
+Implemented:
+- POST `/reclassify/{product_id}`
+- POST `/reclassify/batch`
+- Deterministic orchestration via domain + persistence layer
+- Dependency-injected Shopify + Supabase clients
+- Admin-key protected endpoints (`RECLASSIFY_ADMIN_KEY`)
+- Structured logging support
+- Batch failure isolation
+
+Behavior Guarantees:
+- Single reclassification returns full ClassificationResult contract
+- Batch reclassification continues on per-product failure
+- No Shopify writes performed
+- No side effects beyond classification + persistence
+
+Test Coverage:
+- `tests/test_reclassify_endpoint.py`
+- Dependency override isolation
+- Success + failure path validation
+- Batch aggregation validation
+
+Status: COMPLETE
 
 ---
 
@@ -224,16 +243,20 @@ Status: COMPLETE
 - Exclude anomalies
 - Include early stock arrivals
 - Support approval gating
+- Produce deterministic weekly snapshot outputs
+- Prepare for Slack / reporting integration
+
+Status: NOT STARTED
 
 ---
 
-Classification engine is currently stable through Phase 4 with full anomaly + early stock + active coverage.
+Classification engine is stable through Phase 8 (API-integrated, persisted, and admin-protected).
 
 ---
 
-## 🧪 Test Coverage Snapshot — v0.6-structural-strict
+## 🧪 Test Coverage Snapshot — v0.8-shopify-integration
 
-Total test count: **66 tests — 100% passing**
+Total test count: **83 tests — 100% passing**
 
 Breakdown by domain:
 
@@ -253,6 +276,9 @@ Breakdown by domain:
   - `tests/test_historical_preorder.py`
   - `tests/test_not_a_preorder_product.py`
 
+- API Layer  
+  - `tests/test_reclassify_endpoint.py`
+
 State Machine Guarantees (Strict Mode):
 
 1. Preorder identity requires:
@@ -271,7 +297,7 @@ Coverage Philosophy:
 - Ordering regressions immediately fail the suite.
 - Structural alignment is enforced via tests.
 
-Version Tag: `v0.7-domain-orchestrator`
+Version Tag: `v0.8-shopify-integration`
 
 ---
 ## 🔒 Current Stability Status
@@ -285,6 +311,6 @@ All business states implemented:
 - anomaly_*
 - not_a_preorder_product
 
-Test suite: 60/60 passing.
+Test suite: 83/83 passing.
 
-This version represents the first fully hardened, persisted, domain-isolated state machine release.
+This version represents the first fully hardened, persisted, API-exposed, admin-protected preorder state machine release.

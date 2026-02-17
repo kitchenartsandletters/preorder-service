@@ -304,9 +304,9 @@ This file represents the **final, locked specification** for preorder-service cl
 
 ---
 
-## <details><summary>10. Test Coverage Snapshot (v0.6 — Structural Strict State Machine)</summary>
+## <details><summary>10. Test Coverage Snapshot (v0.8 — Shopify Integration + Structural Strict State Machine)</summary>
 
-**Total Tests: 60**
+**Total Tests: 80**
 
 ### Breakdown by Category
 
@@ -329,6 +329,9 @@ This file represents the **final, locked specification** for preorder-service cl
 **Infrastructure Layer**
 - persistence (Supabase upsert logic)
 - orchestrator (domain → engine → persistence wiring)
+- shopify_service (GraphQL → ProductMetadata shaping)
+- override_service (DB override precedence + reclassification trigger)
+- reclassification (single + batch deterministic re-entry)
 
 ---
 
@@ -347,6 +350,10 @@ The test suite guarantees:
 - Persistence layer always performs deterministic upsert
 - Orchestrator layer is deterministic and batch-safe
 - Fallback behavior is explicitly tested
+- Shopify GraphQL shaping layer fully covered (collections, variants, metafields)
+- inventory_item_id → product_id resolution covered
+- Override precedence enforced: DB override > metafield override > pub_date > date_tags
+- Async service layer isolated from domain classification engine
 
 ---
 
@@ -354,12 +361,15 @@ The test suite guarantees:
 
 This snapshot corresponds to:
 
-- README version: `v0.7-domain-orchestrator`
-- All tests passing (66/66)
+- README version: `v0.8-shopify-integration`
+- All tests passing (80/80)
 - Structural enforcement locked (tag + collection required for active / early states)
 - Persistence upsert implemented (preorder.product_status)
 - Clean domain layer established (no Shopify dependencies)
 - Deterministic orchestrator layer integrated
+- Shopify GraphQL integration stabilized (product + inventory_item paths)
+- Domain classification remains pure and persistence-free
+- Service layer separation enforced (Shopify → Domain → Engine → Persistence)
 
 Future revisions must update this section.
 

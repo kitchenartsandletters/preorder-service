@@ -30,23 +30,28 @@ async def test_build_metadata_from_product_id_basic(mock_shopify_client):
             "handle": "test-book",
             "tags": ["preorder", "2026-04-01"],
             "collections": {
-                "edges": [
-                    {"node": {"handle": "preorder"}}
+                "nodes": [
+                    {"handle": "preorder"}
                 ]
             },
-            "metafield": {
-                "value": "2026-05-01"
+            "metafields": {
+                "nodes": [
+                    {"key": "preorder_override_date", "value": "2026-05-01"}
+                ]
             },
             "variants": {
-                "edges": [
-                    {"node": {"inventoryQuantity": 5}},
-                    {"node": {"inventoryQuantity": 3}},
+                "nodes": [
+                    {"inventoryQuantity": 5},
+                    {"inventoryQuantity": 3},
                 ]
             }
         }
     }
 
-    metadata = await build_product_metadata_from_shopify(product_id=123)
+    metadata = await build_product_metadata_from_shopify(
+    product_id=123,
+    client=mock_shopify_client,
+)
 
     assert isinstance(metadata, ProductMetadata)
     assert metadata.product_id == 123
@@ -68,13 +73,13 @@ async def test_collection_missing_sets_false(mock_shopify_client):
             "id": "gid://shopify/Product/123",
             "handle": "test-book",
             "tags": ["preorder"],
-            "collections": {"edges": []},
-            "metafield": None,
-            "variants": {"edges": []}
+            "collections": {"nodes": []},
+            "metafields": {"nodes": []},
+            "variants": {"nodes": []}
         }
     }
 
-    metadata = await build_product_metadata_from_shopify(product_id=123)
+    metadata = await build_product_metadata_from_shopify(product_id=123, client=mock_shopify_client)
 
     assert metadata.in_preorder_collection is False
 
@@ -102,21 +107,21 @@ async def test_build_metadata_from_inventory_item_id(mock_shopify_client):
                 "handle": "inventory-test",
                 "tags": ["preorder", "2027-01-01"],
                 "collections": {
-                    "edges": [
-                        {"node": {"handle": "preorder"}}
+                    "nodes": [
+                        {"handle": "preorder"}
                     ]
                 },
-                "metafield": None,
+                "metafields": {"nodes": []},
                 "variants": {
-                    "edges": [
-                        {"node": {"inventoryQuantity": 2}}
+                    "nodes": [
+                        {"inventoryQuantity": 2}
                     ]
                 }
             }
         }
     ]
 
-    metadata = await build_product_metadata_from_shopify(inventory_item_id=555)
+    metadata = await build_product_metadata_from_shopify(inventory_item_id=555, client=mock_shopify_client)
 
     assert metadata.product_id == 999
     assert metadata.inventory == 2
@@ -134,12 +139,12 @@ async def test_override_metafield_none(mock_shopify_client):
             "id": "gid://shopify/Product/123",
             "handle": "test-book",
             "tags": ["preorder"],
-            "collections": {"edges": []},
-            "metafield": None,
-            "variants": {"edges": []}
+            "collections": {"nodes": []},
+            "metafields": {"nodes": []},
+            "variants": {"nodes": []}
         }
     }
 
-    metadata = await build_product_metadata_from_shopify(product_id=123)
+    metadata = await build_product_metadata_from_shopify(product_id=123, client=mock_shopify_client)
 
     assert metadata.override_date_raw is None
