@@ -5,6 +5,7 @@ from classification.engine import ClassificationInput, ClassificationResult
 from domain_models import ProductMetadata
 from persistence import persist_classification
 from datetime import date
+from datetime import datetime, UTC
 from override_service import fetch_override_date
 
 def classify_and_persist_product(
@@ -59,6 +60,63 @@ def classify_and_persist_product(
     )
 
     result = classify_preorder_product(engine_input)
+
+    # --- Phase 10: Pub Date History Tracking ---
+
+    resolved_pub_date = result.effective_pub_date
+
+    # Fetch existing product_status (if any)
+    existing_response = (
+        supabase
+        .table("preorder.product_status")
+        .select("effective_pub_date")
+        .eq("product_id", product_metadata.product_id)
+        .execute()
+    )
+
+    existing_rows = existing_response.data if hasattr(existing_response, "data") else None
+
+    if not existing_rows:
+        # Baseline initialization
+        if resolved_pub_date is not None:
+            (
+                supabase
+                .table("preorder.pubdate_history")
+                .insert({
+                    "product_id": product_metadata.product_id,
+                    "old_effective_pub_date": None,
+                    "new_effective_pub_date": resolved_pub_date,
+                    "change_source": "initial_baseline",
+                    "engine_version": engine_version,
+                    "changed_at": datetime.now(UTC).isoformat(),
+                })
+                .execute()
+            )
+    else:
+        stored_pub_date = existing_rows[0].get("effective_pub_date")
+
+        if stored_pub_date != resolved_pub_date:
+            # Determine change source
+            if engine_input.override_date is not None:
+                change_source = "override_date"
+            elif engine_input.pub_date is not None:
+                change_source = "shopify_pub_date"
+            else:
+                change_source = "legacy_tag_fallback"
+
+            (
+                supabase
+                .table("preorder.pubdate_history")
+                .insert({
+                    "product_id": product_metadata.product_id,
+                    "old_effective_pub_date": stored_pub_date,
+                    "new_effective_pub_date": resolved_pub_date,
+                    "change_source": change_source,
+                    "engine_version": engine_version,
+                    "changed_at": datetime.now(UTC).isoformat(),
+                })
+                .execute()
+            )
 
     persist_classification(
         supabase=supabase,

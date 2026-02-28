@@ -49,17 +49,53 @@ The classifier receives product-level signals from Shopify:
 ---
 
 # 2. EFFECTIVE PUB DATE  
-The classifier determines a single `effective_pub_date` using priority:
+The classifier determines a single `effective_pub_date` using the following authoritative resolution order:
 
 1. If `override_date` exists → use override  
-2. Else if `pub_date` exists → use primary pub date  
-3. Else if date_tags exist → use the earliest valid date tag  
+2. Else if `pub_date` exists → use primary pub date (`custom.pub_date`, authoritative Shopify source)  
+3. Else if exactly one valid date tag exists → use that single date tag (legacy fallback only)  
 4. Else → `effective_pub_date = None`
 
-If multiple date_tags exist, they must be sorted chronologically before resolution.
-Malformed or unparsable date tags are ignored for effective_pub_date resolution but may trigger anomalies.
+Additional rules:
+
+- Date tags are legacy compatibility only and are not standard operating procedure.
+- If multiple valid date tags exist:
+  - If exactly one of them matches `pub_date`, the classifier may proceed using `pub_date`.
+  - Otherwise → classify as `anomaly_multi_date_conflict`.
+- Malformed or unparsable date tags are ignored for effective_pub_date resolution but may trigger anomalies if they create ambiguity.
+
+The preorder-service persists and owns `effective_pub_date` once resolved. Shopify reflects only the current product state; historical pub date changes must be recorded internally by the state machine.
 
 ---
+
+## 2.1 PUB DATE CHANGE POLICY
+
+Publication dates may legitimately change (e.g., publication slips). The system must honor authoritative updates while preserving lifecycle stability.
+
+Rules:
+
+- If `custom.pub_date` changes:
+  - Update `effective_pub_date`.
+  - Record the previous effective pub date internally (state machine responsibility).
+  - Trigger full reclassification.
+- If `override_date` changes:
+  - It immediately supersedes all other pub date signals.
+  - Reclassification must be triggered.
+- Pub date history is not inferred from Shopify; it must be explicitly persisted by preorder-service.
+
+This ensures that pub date updates are honored (NYT-compatible behavior) while preventing uncontrolled lifecycle drift caused by tag churn.
+
+---
+
+## 2.2 FUTURE EXTENSIONS (PLANNED)
+
+Future phases of the preorder-service will introduce additional orthogonal dimensions that depend on `effective_pub_date` but are not part of structural preorder identity:
+
+- Inventory arrival timing (e.g., first_positive_inventory_at)
+- Commitment-aware lifecycle states (e.g., late_preorder, closed_preorder)
+- Historical pub date tracking and transition audit
+
+These dimensions are intentionally separated from structural preorder identity and anomaly detection logic.
 
 # 3. PREORDER STATE CATEGORIES (FINAL, AUTHORITATIVE)
 

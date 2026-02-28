@@ -28,9 +28,16 @@ This is the **final source of truth** for preorder-service classification.
 Choose ONE date using strict priority:
 
 1. If `override_date` exists → **override_date**  
-2. Else if `pub_date` exists → **pub_date**  
-3. Else if `date_tags` exist → **latest date_tag**  
+2. Else if `pub_date` exists → **pub_date** (`custom.pub_date`, authoritative source)  
+3. Else if exactly one valid `date_tag` exists → **that single date_tag** (legacy fallback only)  
 4. Else → **None**
+
+Additional Rules:
+- Date tags are legacy compatibility only and are not standard operating procedure.
+- If multiple valid date tags exist:
+  - If exactly one matches `pub_date`, resolution proceeds using `pub_date`.
+  - Otherwise → classify as `anomaly_multi_date_conflict`.
+- The system must not auto-select "latest" or "earliest" tag when multiple valid tags exist.
 
 ### **Inventory Semantics**
 
@@ -101,9 +108,9 @@ status = "anomaly_missing_collection"
 
 Trigger Patterns:
 
-- **Case A** – one tag, no override, pub_date != tag  
-- **Case B** – multiple tags, no override, pub_date != latest_tag  
-- **Case C** – pub_date/override disagree with latest_tag (unless override_conflict is more appropriate)
+- **Case A** – single date_tag present AND pub_date exists AND they differ  
+- **Case B** – override_date exists AND differs from pub_date  
+- **Case C** – single fallback tag present AND no pub_date exists BUT tag is malformed or invalid
 
 **Expected**
 ```
@@ -117,8 +124,8 @@ status = "anomaly_pubdate_conflict"
 
 Trigger Patterns:
 - override_date < pub_date  
-- override_date < latest_tag  
-- override older than any recorded official date  
+- override_date conflicts with authoritative pub_date  
+- override_date is chronologically implausible relative to recorded historical effective_pub_date (future phase validation)
 
 **Expected**
 ```
@@ -130,10 +137,9 @@ status = "anomaly_override_conflict"
 ### **2.5 anomaly_multi_date_conflict (Revised)**  
 **Test File:** `tests/anomalies/test_anomaly_multi_date_conflict.py`
 
-**Condition**
-- `len(date_tags) >= 2`  
-- `pub_date is None`  
-- `override_date is None`  
+Condition:
+- `len(valid_date_tags) >= 2`
+- AND NOT (exactly one tag equals `pub_date`)
 
 **Expected**
 ```
@@ -159,7 +165,7 @@ Use **early_stock_arrival** instead.
 - `effective_pub_date > today`  
 - `inventory > 0`  
 - AND product is structurally a preorder candidate:
-  - (`'preorder'` in tags OR `in_preorder_collection == True`)
+  - (`'preorder'` in tags AND `in_preorder_collection == True`)
 - AND no `anomaly_*` condition fires  
 
 **Expected**
@@ -239,11 +245,13 @@ status = "not_a_preorder_product"
 
 ### Structural Preorder Candidate Definition
 
-A product is considered structurally preorder-eligible when:
+A product is considered structurally preorder-eligible only when:
 
 - `'preorder'` in tags  
-  OR  
+  AND  
 - `in_preorder_collection == True`
+
+If tag and collection are misaligned, the product must classify as an anomaly.
 
 Statuses `early_stock_arrival` and `active_preorder` require structural preorder eligibility.  
 Otherwise the product falls through to `not_a_preorder_product` unless an anomaly fires.
@@ -292,8 +300,10 @@ Otherwise the product falls through to `not_a_preorder_product` unless an anomal
 |-------------------|----------------|--------|
 | override only | override | highest priority |
 | override + pub_date | override | override wins |
-| pub_date only | pub_date | next priority |
-| no metafields + date_tags | latest date_tag | tags record revision history |
+| pub_date only | pub_date | authoritative source |
+| single date_tag only | date_tag | legacy fallback |
+| multiple date_tags + pub_date match | pub_date | canonical alignment |
+| multiple date_tags (no match) | anomaly_multi_date_conflict | ambiguous tags not allowed |
 | no dates anywhere | None | cannot derive a pub date |
 
 </details>

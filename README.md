@@ -60,7 +60,32 @@ It transforms raw events into structured preorder intelligence.
 
 ---
 
+# 🔒 Frozen Canonical Rules (Binding)
 
+The following rules are authoritative and must remain consistent across the codebase, specification, and test matrix.
+
+### Structural Preorder Identity
+A product is structurally preorder-eligible only when:
+
+- `'preorder'` tag is present
+- AND product is in the preorder collection
+
+Tag/collection misalignment must classify as an anomaly.
+
+### Effective Publication Date Resolution
+The authoritative resolution order is:
+
+1. `override_date`
+2. `custom.pub_date` (authoritative Shopify source)
+3. Exactly one valid date_tag (legacy fallback only)
+4. Otherwise → None
+
+Additional rules:
+- Date tags are legacy compatibility only and are not standard operating procedure.
+- If multiple valid date tags exist:
+  - If exactly one matches `custom.pub_date`, resolution proceeds using `custom.pub_date`.
+  - Otherwise → `anomaly_multi_date_conflict`.
+- The system must not auto-select "latest" or "earliest" date tags.
 
 ---
 
@@ -73,8 +98,8 @@ Implemented:
 - `resolve_effective_pub_date()` utility
 - Priority order:
   1. override_date
-  2. pub_date
-  3. latest date_tag
+  2. custom.pub_date
+  3. exactly one valid date_tag (legacy fallback only)
 - Fully covered by unit tests
 
 Status: COMPLETE
@@ -105,7 +130,7 @@ Definition:
     Future effective_pub_date
     AND inventory > 0
     AND structurally preorder-eligible:
-        ('preorder' in tags OR in_preorder_collection == True)
+        ('preorder' in tags AND in_preorder_collection == True)
     AND no anomalies
 
 Behavior:
@@ -247,6 +272,34 @@ Status: COMPLETE
 - Prepare for Slack / reporting integration
 
 Status: NOT STARTED
+
+---
+
+# 🧭 Forward Roadmap
+
+## Phase 10 — Pub Date History Tracking
+- Persist `effective_pub_date` changes internally
+- Record historical transitions (previous value, changed_at, source)
+- Trigger deterministic reclassification on pub date updates
+
+## Phase 11 — Inventory Arrival Timing
+- Track `first_positive_inventory_at`
+- Classify arrival timing:
+  - no_arrival
+  - early_arrival
+  - on_time_arrival
+  - late_arrival
+- Arrival timing is immutable once first positive delta occurs
+
+## Phase 12 — Commitment-Aware Lifecycle States
+- Introduce commitment ledger integration
+- Add lifecycle states:
+  - late_preorder
+  - closed_preorder
+  - open_historical_preorder
+- Separate lifecycle state from structural preorder identity
+
+These phases expand the state machine without altering the frozen canonical rules above.
 
 ---
 
