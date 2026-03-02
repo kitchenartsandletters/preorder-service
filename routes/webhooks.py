@@ -97,7 +97,7 @@ async def _insert_tracking(pool, row: dict):
 
     print(f"✅ Insert complete for event_id={row.get('event_id')}")
 
-async def _process_product_update(payload: dict):
+async def _process_product_update(payload: dict, shop_domain: str):
     """
     Fetch authoritative Shopify product state and reclassify.
     This is synchronous by design (v1 simplicity).
@@ -110,7 +110,8 @@ async def _process_product_update(payload: dict):
     try:
         # 1. Fetch full Shopify product (GraphQL)
         product_metadata = await build_product_metadata_from_shopify(
-            product_id=product_id
+            product_id=product_id,
+            shop_domain=shop_domain,
         )
 
         logger.info(
@@ -138,7 +139,7 @@ async def _process_product_update(payload: dict):
         # Never break webhook response because of classification failure
         print(f"⚠️ Reclassification failed for product_id={product_id}: {e}")
 
-async def _process_inventory_update(payload: dict):
+async def _process_inventory_update(payload: dict, shop_domain: str):
     """
     Fetch authoritative Shopify product state from an inventory update
     and reclassify the associated product.
@@ -153,7 +154,8 @@ async def _process_inventory_update(payload: dict):
     try:
         # Build metadata by resolving inventory_item → product via Shopify
         product_metadata = await build_product_metadata_from_shopify(
-            inventory_item_id=inventory_item_id
+            inventory_item_id=inventory_item_id,
+            shop_domain=shop_domain,
         )
 
         logger.info(
@@ -249,10 +251,12 @@ async def _handle(topic: str, request: Request):
         }
         await _insert_tracking(pool, row)
     # Reclassify once per webhook event (not per line item)
+    shop_domain = x_shopify_shop_domain
+
     if topic == "products/update":
-        await _process_product_update(payload)
+        await _process_product_update(payload, shop_domain)
     elif topic == "inventory_levels/update":
-        await _process_inventory_update(payload)
+        await _process_inventory_update(payload, shop_domain)
     return JSONResponse({"status": "ok"})
 
 @router.post("/")
