@@ -154,6 +154,7 @@ async def build_product_metadata_from_shopify(
     product_id: Optional[int] = None,
     inventory_item_id: Optional[int] = None,
     client: Any = None,
+    shop_domain: Optional[str] = None,
 ) -> ProductMetadata:
     """
     Shopify → ProductMetadata
@@ -165,10 +166,13 @@ async def build_product_metadata_from_shopify(
     No Supabase.
     """
     if client is None:
-        # Backward compatibility: lazily construct a Shopify client
+        # Lazily construct a Shopify client using shop_domain when provided
         try:
             from shopify_client import get_shopify_client  # adjust if your factory name differs
-            client = get_shopify_client()
+            if shop_domain:
+                client = get_shopify_client(shop_domain=shop_domain)
+            else:
+                client = get_shopify_client()
         except Exception as e:
             raise ValueError(
                 "client must be provided and could not be auto-created via get_shopify_client()"
