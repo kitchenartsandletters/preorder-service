@@ -109,7 +109,9 @@ async def _process_product_update(payload: dict):
 
     try:
         # 1. Fetch full Shopify product (GraphQL)
-        product_metadata = await build_product_metadata_from_shopify(product_id)
+        product_metadata = await build_product_metadata_from_shopify(
+            product_id=product_id
+        )
 
         logger.info(
             f"[Classification] Product metadata resolved for product_id={product_id} "

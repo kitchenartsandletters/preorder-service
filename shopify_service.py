@@ -165,7 +165,14 @@ async def build_product_metadata_from_shopify(
     No Supabase.
     """
     if client is None:
-        raise ValueError("client must be provided")
+        # Backward compatibility: lazily construct a Shopify client
+        try:
+            from shopify_client import get_shopify_client  # adjust if your factory name differs
+            client = get_shopify_client()
+        except Exception as e:
+            raise ValueError(
+                "client must be provided and could not be auto-created via get_shopify_client()"
+            ) from e
     if product_id is None and inventory_item_id is None:
         raise ValueError("Either product_id or inventory_item_id must be provided")
 
