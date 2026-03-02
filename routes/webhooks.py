@@ -9,6 +9,8 @@ from db.connection import get_pool
 from shopify_service import build_product_metadata_from_shopify
 from orchestrator import reclassify_single_product
 import uuid
+from dependencies import get_supabase_client, get_shopify_client
+
 
 router = APIRouter(prefix="/webhooks")
 logger = logging.getLogger(__name__)
@@ -122,11 +124,13 @@ async def _process_product_update(payload: dict, shop_domain: str):
             return
 
         # 2. Reclassify + persist
-        pool = await get_pool()
+        supabase = get_supabase_client()
+        shopify_client = get_shopify_client()
+
         result = await reclassify_single_product(
-            supabase=pool,
-            product_metadata=product_metadata,
-            engine_version="v1",
+            supabase=supabase,
+            shopify_client=shopify_client,
+            product_id=product_metadata.product_id,
         )
 
         logger.info(
@@ -164,11 +168,13 @@ async def _process_inventory_update(payload: dict, shop_domain: str):
         if not product_metadata:
             return
 
-        pool = await get_pool()
+        supabase = get_supabase_client()
+        shopify_client = get_shopify_client()
+
         result = await reclassify_single_product(
-            supabase=pool,
-            product_metadata=product_metadata,
-            engine_version="v1",
+            supabase=supabase,
+            shopify_client=shopify_client,
+            product_id=product_metadata.product_id,
         )
 
         logger.info(
