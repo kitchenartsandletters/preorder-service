@@ -111,7 +111,6 @@ async def _process_product_update(payload: dict, shop_domain: str):
         # 1. Fetch full Shopify product (GraphQL)
         product_metadata = await build_product_metadata_from_shopify(
             product_id=product_id,
-            shop_domain=shop_domain,
         )
 
         logger.info(
@@ -155,7 +154,6 @@ async def _process_inventory_update(payload: dict, shop_domain: str):
         # Build metadata by resolving inventory_item → product via Shopify
         product_metadata = await build_product_metadata_from_shopify(
             inventory_item_id=inventory_item_id,
-            shop_domain=shop_domain,
         )
 
         logger.info(
