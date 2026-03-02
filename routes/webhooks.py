@@ -68,12 +68,12 @@ async def _insert_tracking(pool, row: dict):
             status, approved, payload, headers, processed, processing_notes
         )
         values (
-            %s, %s, %s, %s,
-            %s, %s, %s, %s,
-            %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s
+            $1, $2, $3, $4,
+            $5, $6, $7, $8,
+            $9, $10, $11, $12, $13,
+            $14, $15, $16, $17, $18, $19
         )
-    """, (
+    """,
         row.get("event_id"),
         row.get("topic"),
         row.get("shop_domain"),
@@ -93,7 +93,7 @@ async def _insert_tracking(pool, row: dict):
         json.dumps(row.get("headers")),
         False,  # processed
         None    # processing_notes
-    ))
+    )
 
     print(f"✅ Inserted preorder.tracking row for event_id={row.get('event_id')}")
     print("✅ Insert attempted; committing…")
