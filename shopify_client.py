@@ -149,3 +149,10 @@ class ShopifyClient:
             raise ShopifyGraphQLError(f"Product {product_id} not found")
 
         return product
+    
+def get_shopify_client() -> ShopifyClient:
+    """
+    Simple factory used by shopify_service.
+    Uses environment configuration.
+    """
+    return ShopifyClient()
