@@ -1,0 +1,24 @@
+from datetime import datetime, timezone
+from build_inventory_arrival import extract_inventory_event, parse_payload
+
+def test_extract_inventory_event_happy_path():
+    payload = {
+        "available": 5,
+        "updated_at": "2026-01-19T14:10:23-05:00",
+        "location_id": 1,
+        "inventory_item_id": 777
+    }
+    inv_item_id, loc_id, available, occurred_at = extract_inventory_event(payload)
+    assert inv_item_id == 777
+    assert loc_id == 1
+    assert available == 5
+    assert occurred_at is not None
+    assert occurred_at.tzinfo is not None
+
+def test_parse_payload_string_json():
+    raw = "{\"available\": 0, \"location_id\": 1, \"inventory_item_id\": 2}"
+    obj = parse_payload(raw)
+    assert obj["inventory_item_id"] == 2
+
+def test_parse_payload_bad_json():
+    assert parse_payload("{not json") == {}

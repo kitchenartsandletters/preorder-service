@@ -3,7 +3,7 @@ from typing import List
 from classification.engine import classify_preorder_product
 from classification.engine import ClassificationInput, ClassificationResult
 from domain_models import ProductMetadata
-from persistence import persist_classification
+from persistence import persist_classification, persist_inventory_arrival
 from datetime import date
 from datetime import datetime, UTC
 from override_service import fetch_override_date
@@ -93,9 +93,22 @@ def classify_and_persist_product(
                 .execute()
             )
     else:
-        stored_pub_date = existing_rows[0].get("effective_pub_date")
+        stored_pub_date_raw = existing_rows[0].get("effective_pub_date")
 
-        if stored_pub_date != resolved_pub_date:
+        # Normalize both dates to date objects for safe comparison
+        def _normalize_date(value):
+            if value is None:
+                return None
+            if isinstance(value, date):
+                return value
+            if isinstance(value, str):
+                return date.fromisoformat(value)
+            return None
+
+        stored_pub_date = _normalize_date(stored_pub_date_raw)
+        normalized_resolved_pub_date = _normalize_date(resolved_pub_date)
+
+        if stored_pub_date != normalized_resolved_pub_date:
             # Determine change source
             if engine_input.override_date is not None:
                 change_source = "override_date"
@@ -110,13 +123,21 @@ def classify_and_persist_product(
                 .insert({
                     "product_id": product_metadata.product_id,
                     "old_effective_pub_date": stored_pub_date,
-                    "new_effective_pub_date": resolved_pub_date,
+                    "new_effective_pub_date": normalized_resolved_pub_date,
                     "change_source": change_source,
                     "engine_version": engine_version,
                     "changed_at": datetime.now(UTC).isoformat(),
                 })
                 .execute()
             )
+
+    # --- Phase 11: Inventory Arrival Tracking ---
+    persist_inventory_arrival(
+        supabase=supabase,
+        product_id=product_metadata.product_id,
+        inventory=product_metadata.inventory,
+        engine_version=engine_version,
+    )
 
     persist_classification(
         supabase=supabase,

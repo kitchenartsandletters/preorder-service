@@ -87,15 +87,160 @@ This ensures that pub date updates are honored (NYT-compatible behavior) while p
 
 ---
 
-## 2.2 FUTURE EXTENSIONS (PLANNED)
+## 2.2 PUB DATE HISTORY (STATE MACHINE RESPONSIBILITY)
+
+The classifier itself remains a pure function. It does not read historical state and does not compute transitions across time.
+
+However, the preorder-service state machine must persist effective_pub_date transitions in the table:
+
+    preorder.pubdate_history
+
+This table records:
+
+- product_id
+- old_effective_pub_date
+- new_effective_pub_date
+- change_source
+- engine_version
+- changed_at
+
+Rules:
+
+1. A baseline row is inserted the first time a product is classified and effective_pub_date is resolved.
+2. A new row is inserted whenever effective_pub_date changes.
+3. Date comparison must be normalized (date vs ISO string safe comparison).
+4. Pub date history insertion must occur BEFORE product_status upsert.
+5. Pub date history tracking must be idempotent.
+
+Change source values:
+
+- initial_baseline
+- shopify_pub_date
+- override_date
+- legacy_tag_fallback
+
+This historical tracking layer is orthogonal to classification logic. It exists to preserve temporal integrity for:
+
+- Reporting systems (e.g., NYT compatibility)
+- Lifecycle state transitions
+- Arrival timing classification (future phases)
+- Auditability of publication slips
+
+The classifier must never depend on pubdate_history for decision-making.
+
+---
+
+## 2.3 FUTURE EXTENSIONS (PLANNED)
 
 Future phases of the preorder-service will introduce additional orthogonal dimensions that depend on `effective_pub_date` but are not part of structural preorder identity:
 
 - Inventory arrival timing (e.g., first_positive_inventory_at)
 - Commitment-aware lifecycle states (e.g., late_preorder, closed_preorder)
-- Historical pub date tracking and transition audit
 
 These dimensions are intentionally separated from structural preorder identity and anomaly detection logic.
+
+---
+
+## 2.4 INVENTORY ARRIVAL (STATE MACHINE RESPONSIBILITY)
+
+The classifier remains a pure function and does not inspect historical inventory transitions.
+
+However, the preorder-service state machine must persist the first time a product's inventory becomes positive in the table:
+
+    preorder.inventory_arrival
+
+This table records:
+
+- product_id
+- first_positive_inventory_at
+- engine_version
+- created_at
+
+Rules:
+
+1. A row is inserted when:
+       inventory > 0
+       AND no existing arrival row exists for that product.
+2. The first_positive_inventory_at value is immutable once written.
+3. Arrival tracking applies to ALL products (not preorder-restricted).
+4. No transition detection is required (no <=0 → >0 logic).
+5. Inventory arrival persistence must be idempotent.
+6. Inventory arrival tracking must execute before product_status upsert.
+7. The classifier must never depend on inventory_arrival for decision-making.
+
+Inventory arrival tracking is orthogonal to:
+
+- Structural preorder identity
+- Anomaly detection
+- Pub date resolution
+
+It exists to preserve physical stock history for future phases, including:
+
+- Early / on-time / late arrival timing derivation
+- Commitment-aware lifecycle state transitions
+- Operational auditing
+
+The classifier must remain unaware of arrival history to preserve purity and determinism.
+
+---
+
+## 2.5 ARRIVAL TIMING DERIVATION (DERIVED LAYER)
+
+Arrival timing is a derived dimension and is NOT part of structural preorder classification.
+
+It is computed from:
+
+- `effective_pub_date` (from product_status)
+- `first_positive_inventory_at` (from inventory_arrival)
+
+Arrival timing must NOT:
+- Influence structural preorder identity
+- Influence anomaly detection
+- Influence effective_pub_date resolution
+- Be persisted as a mutable field
+
+Arrival timing categories:
+
+- `no_arrival`
+- `early_arrival`
+- `on_time_arrival`
+- `late_arrival`
+
+Derivation rules:
+
+1. If `effective_pub_date` is NULL → arrival_timing = NULL  
+   (Pub date is required to anchor timing.)
+
+2. If no inventory_arrival row exists → arrival_timing = `no_arrival`
+
+3. Normalize `first_positive_inventory_at` to ET and convert to date:
+       arrival_date_et
+
+4. If arrival_date_et > effective_pub_date → `late_arrival`
+
+5. Else compute:
+       days_diff = (effective_pub_date - arrival_date_et).days
+
+   - If days_diff <= 7 → `on_time_arrival`
+   - Else → `early_arrival`
+
+Definitions:
+
+- Late arrival = inventory received AFTER the pub date.
+- On-time arrival = inventory received on the pub date or within 7 days prior.
+- Early arrival = inventory received more than 7 days before the pub date.
+- Arrival timing is immutable once first_positive_inventory_at is written.
+- Pub date changes may cause arrival timing to re-derive deterministically.
+- Arrival timing remains fully decoupled from the classifier engine.
+
+Arrival timing exists to support:
+
+- Operational visibility
+- Commitment-aware lifecycle states (future phases)
+- Reporting alignment
+- Audit integrity
+
+The classifier must remain unaware of arrival timing to preserve purity and determinism.
 
 # 3. PREORDER STATE CATEGORIES (FINAL, AUTHORITATIVE)
 

@@ -277,29 +277,153 @@ Status: NOT STARTED
 
 # 🧭 Forward Roadmap
 
-## Phase 10 — Pub Date History Tracking
-- Persist `effective_pub_date` changes internally
-- Record historical transitions (previous value, changed_at, source)
-- Trigger deterministic reclassification on pub date updates
+## ✅ Phase 10 — Pub Date History Tracking
+Implemented:
+- `preorder.pubdate_history` table
+- Baseline effective_pub_date capture
+- Change detection with normalized date comparison
+- change_source attribution:
+  - initial_baseline
+  - shopify_pub_date
+  - override_date
+  - legacy_tag_fallback
+- Idempotent insert behavior
+- Executed before product_status upsert
 
-## Phase 11 — Inventory Arrival Timing
-- Track `first_positive_inventory_at`
-- Classify arrival timing:
-  - no_arrival
-  - early_arrival
-  - on_time_arrival
-  - late_arrival
-- Arrival timing is immutable once first positive delta occurs
+Test Coverage:
+- `tests/test_pubdate_history.py`
+- Baseline insert
+- No-change behavior
+- Date normalization
+- Override precedence
+- Idempotency
 
-## Phase 12 — Commitment-Aware Lifecycle States
-- Introduce commitment ledger integration
-- Add lifecycle states:
-  - late_preorder
-  - closed_preorder
-  - open_historical_preorder
-- Separate lifecycle state from structural preorder identity
+Status: COMPLETE
 
-These phases expand the state machine without altering the frozen canonical rules above.
+## ✅ Phase 11 — Inventory Arrival Tracking
+
+Implemented:
+- `preorder.inventory_arrival` table
+- Immutable `first_positive_inventory_at` capture
+- Rule:
+      inventory > 0 AND no existing row
+- No transition detection
+- No classification coupling
+- Independent of pub date logic
+- Executed before `product_status` upsert
+
+Behavior Guarantees:
+- One row per product (primary key enforced)
+- First arrival is immutable
+- Idempotent persistence
+- Applies to all products (not preorder-restricted)
+- Inventory history does not mutate structural classification
+
+Test Coverage:
+- `tests/test_inventory_arrival.py`
+  - First insert when inventory > 0
+  - No insert when inventory <= 0
+  - Idempotency on repeated runs
+  - Independent of classification state
+
+Status: COMPLETE
+
+-## ✅ Phase 12 — Arrival Timing Derivation
+
+Implemented:
+- `preorder.vw_arrival_timing` SQL view
+- Pure derivation helper: `derive_arrival_timing()`
+- Pub-date anchored timing classification
+- ET-normalized comparison logic
+- No coupling to structural classification
+- No persistence mutation
+- Derived-only state (not stored)
+
+Canonical Logic:
+
+Let:
+- `effective_pub_date` (date)
+- `first_positive_inventory_at` (timestamptz)
+- `arrival_date_et` = ET-normalized date of first_positive_inventory_at
+- `days_diff` = (effective_pub_date - arrival_date_et).days
+
+Classification:
+
+    IF effective_pub_date IS NULL:
+        arrival_timing = NULL
+
+    ELIF no inventory arrival row:
+        arrival_timing = no_arrival
+
+    ELIF arrival_date_et > effective_pub_date:
+        arrival_timing = late_arrival
+
+    ELIF days_diff <= 7:
+        arrival_timing = on_time_arrival
+
+    ELSE:
+        arrival_timing = early_arrival
+
+Behavior Guarantees:
+- Late arrival = inventory received AFTER pub date.
+- On-time arrival = received on pub date or within 7 days prior.
+- Early arrival = received more than 7 days prior.
+- First arrival is immutable.
+- Pub date changes re-derive arrival timing deterministically.
+- Arrival timing does not alter structural preorder identity.
+
+Test Coverage:
+- `tests/test_arrival_timing_derivation.py`
+  - No arrival
+  - Early (8+ days before)
+  - On-time (0–7 days before)
+  - On pub date
+  - Late (after pub date)
+  - Pub date required (None returns None)
+
+Status: COMPLETE
+
+---
+
+## ✅ Phase 12 — Commitment-Aware Lifecycle States
+
+Implemented:
+- `preorder.commitment_ledger` integration
+- `preorder.lifecycle_snapshot` table
+- Snapshot-based presale cohort freezing at pub-date boundary
+- Commitment-aware lifecycle derivation (separate from structural classification)
+
+Lifecycle States (Derived):
+
+- `open_preorder`
+- `late_preorder`
+- `closed_preorder`
+- `open_historical_preorder`
+
+Design Guarantees:
+
+- Lifecycle state is derived, never persisted as structural identity.
+- Structural preorder classification remains pure and independent.
+- Snapshot freezes presale cohort at ET midnight of effective_pub_date.
+- Closure requires:
+  - Inventory arrival exists
+  - Net commitment == 0
+- Post-pub orders do NOT affect frozen presale cohort totals.
+- Late arrival logic (Phase 12) remains inventory-based only.
+
+Separation of Concerns:
+
+- Structural classification → product identity
+- Arrival timing → inventory timing
+- Commitment lifecycle → order fulfillment state
+
+Test Coverage:
+- `tests/test_lifecycle_snapshot.py`
+- `tests/test_lifecycle_snapshotter.py`
+- `tests/test_lifecycle_view_derivation.py`
+- `tests/test_refund_tracking_split.py`
+
+Status: COMPLETE
 
 ---
 
@@ -309,7 +433,7 @@ Classification engine is stable through Phase 8 (API-integrated, persisted, and 
 
 ## 🧪 Test Coverage Snapshot — v0.8-shopify-integration
 
-Total test count: **83 tests — 100% passing**
+Total test count: **111 tests — 100% passing**
 
 Breakdown by domain:
 
@@ -350,7 +474,7 @@ Coverage Philosophy:
 - Ordering regressions immediately fail the suite.
 - Structural alignment is enforced via tests.
 
-Version Tag: `v0.8-shopify-integration`
+Version Tag: `v1.0-lifecycle-hardened`
 
 ---
 ## 🔒 Current Stability Status
@@ -364,6 +488,6 @@ All business states implemented:
 - anomaly_*
 - not_a_preorder_product
 
-Test suite: 83/83 passing.
+Test suite: 111/111 passing.
 
 This version represents the first fully hardened, persisted, API-exposed, admin-protected preorder state machine release.

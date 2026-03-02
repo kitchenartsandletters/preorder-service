@@ -1,4 +1,4 @@
-# Preorder-Service Classification Test Matrix (Rev 3 — FINAL FROZEN SPEC)
+<file name=0 path=/Users/gilcalderon/shopify-projects/preorder-service/docs/test_matrix.md># Preorder-Service Classification Test Matrix (Rev 3 — FINAL FROZEN SPEC)
 
 This document defines:
 - all classification categories  
@@ -290,6 +290,15 @@ Otherwise the product falls through to `not_a_preorder_product` unless an anomal
 - tag + collection interactions  
 - conflict prioritization  
 
+### **Arrival Timing (Derived Layer)**
+- no_arrival  
+- early_arrival  
+- on_time_arrival  
+- late_arrival  
+- pub_date required (NULL behavior)  
+- 7-day boundary enforcement  
+- ET-normalized date comparison  
+
 </details>
 
 ---
@@ -314,9 +323,9 @@ This file represents the **final, locked specification** for preorder-service cl
 
 ---
 
-## <details><summary>10. Test Coverage Snapshot (v0.8 — Shopify Integration + Structural Strict State Machine)</summary>
+## <details><summary>10. Test Coverage Snapshot (v1.0 — Arrival Layer Integrated)</summary>
 
-**Total Tests: 80**
+**Total Tests: 96**
 
 ### Breakdown by Category
 
@@ -333,12 +342,17 @@ This file represents the **final, locked specification** for preorder-service cl
 - historical_preorder
 - not_a_preorder_product
 
-**Utility / Resolution**
-- effective_pub_date
+**Utility / Temporal Layers**
+- effective_pub_date resolution
+- pubdate_history (baseline insert, change detection, normalization, idempotency)
+
+**Physical State Layer**
+- inventory_arrival (first positive detection, idempotency, decoupling from classification)
+- arrival_timing derivation (pub-date anchored, 7-day boundary, immutable first arrival)
 
 **Infrastructure Layer**
 - persistence (Supabase upsert logic)
-- orchestrator (domain → engine → persistence wiring)
+- orchestrator (domain → engine → temporal → physical → persistence wiring)
 - shopify_service (GraphQL → ProductMetadata shaping)
 - override_service (DB override precedence + reclassification trigger)
 - reclassification (single + batch deterministic re-entry)
@@ -364,6 +378,18 @@ The test suite guarantees:
 - inventory_item_id → product_id resolution covered
 - Override precedence enforced: DB override > metafield override > pub_date > date_tags
 - Async service layer isolated from domain classification engine
+- Pub date changes are historically recorded before persistence upsert
+- Date normalization prevents false-positive change detection
+- Baseline initialization captured for first classification
+- Idempotent pubdate history tracking enforced
+- First physical inventory arrival captured immutably
+- Inventory arrival layer remains decoupled from classification logic
+- Arrival timing derived strictly from immutable first_positive_inventory_at
+- Late arrival defined strictly as arrival_date > effective_pub_date
+- On-time arrival defined as arrival_date within 7 days prior to pub_date (inclusive)
+- Early arrival defined as >7 days prior to pub_date
+- Arrival timing returns NULL when effective_pub_date is NULL
+- Arrival timing layer remains fully decoupled from structural classification engine
 
 ---
 
@@ -371,16 +397,18 @@ The test suite guarantees:
 
 This snapshot corresponds to:
 
-- README version: `v0.8-shopify-integration`
-- All tests passing (80/80)
+- README version: `v1.0-arrival-layer`
+- All tests passing (88/88)
 - Structural enforcement locked (tag + collection required for active / early states)
+- Temporal layer implemented (pubdate_history)
+- Physical arrival layer implemented (inventory_arrival)
 - Persistence upsert implemented (preorder.product_status)
 - Clean domain layer established (no Shopify dependencies)
 - Deterministic orchestrator layer integrated
 - Shopify GraphQL integration stabilized (product + inventory_item paths)
 - Domain classification remains pure and persistence-free
-- Service layer separation enforced (Shopify → Domain → Engine → Persistence)
+- Service layer separation enforced (Shopify → Domain → Engine → Temporal → Physical → Persistence)
 
 Future revisions must update this section.
 
-</details>
+</details></file>

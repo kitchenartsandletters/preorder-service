@@ -38,3 +38,45 @@ def persist_classification(
         .upsert(payload, on_conflict="product_id")
         .execute()
     )
+
+def persist_inventory_arrival(
+    supabase,
+    product_id: int,
+    inventory: int,
+    engine_version: str,
+) -> None:
+    """
+    Record first time inventory becomes positive.
+
+    Rule:
+        inventory > 0 AND no existing row
+    """
+
+    if inventory <= 0:
+        return
+
+    # Check if row already exists
+    existing = (
+        supabase
+        .table("preorder.inventory_arrival")
+        .select("product_id")
+        .eq("product_id", product_id)
+        .limit(1)
+        .execute()
+    )
+
+    if existing.data:
+        return  # idempotent: already recorded
+
+    payload = {
+        "product_id": product_id,
+        "first_positive_inventory_at": datetime.now(UTC).isoformat(),
+        "engine_version": engine_version,
+    }
+
+    (
+        supabase
+        .table("preorder.inventory_arrival")
+        .insert(payload)
+        .execute()
+    )

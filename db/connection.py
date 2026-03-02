@@ -1,6 +1,14 @@
-# db/connection.py
-import os, psycopg
-from psycopg.rows import dict_row
+import os
+import asyncpg
+
+_pool = None
 
 async def get_pool():
-    return await psycopg.AsyncConnection.connect(os.getenv("DATABASE_URL"), row_factory=dict_row)
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(
+            dsn=os.getenv("DATABASE_URL"),
+            min_size=1,
+            max_size=5,
+        )
+    return _pool
