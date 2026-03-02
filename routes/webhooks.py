@@ -95,10 +95,7 @@ async def _insert_tracking(pool, row: dict):
         None    # processing_notes
     )
 
-    print(f"✅ Inserted preorder.tracking row for event_id={row.get('event_id')}")
-    print("✅ Insert attempted; committing…")
-    await pool.commit()
-    print(f"✅ Commit complete for event_id={row.get('event_id')}")
+    print(f"✅ Insert complete for event_id={row.get('event_id')}")
 
 async def _process_product_update(payload: dict):
     """
