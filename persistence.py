@@ -59,7 +59,8 @@ def persist_inventory_arrival(
     # Check if row already exists
     existing = (
         supabase
-        .table("preorder.inventory_arrival")
+        .schema("preorder")
+        .table("inventory_arrival")
         .select("product_id")
         .eq("product_id", product_id)
         .limit(1)
@@ -77,7 +78,8 @@ def persist_inventory_arrival(
 
     (
         supabase
-        .table("preorder.inventory_arrival")
+        .schema("preorder")
+        .table("inventory_arrival")
         .insert(payload)
         .execute()
     )

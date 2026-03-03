@@ -82,7 +82,8 @@ def classify_and_persist_product(
         if resolved_pub_date is not None:
             (
                 supabase
-                .table("preorder.pubdate_history")
+                .schema("preorder")
+                .table("pubdate_history")
                 .insert({
                     "product_id": product_metadata.product_id,
                     "old_effective_pub_date": None,
@@ -120,7 +121,8 @@ def classify_and_persist_product(
 
             (
                 supabase
-                .table("preorder.pubdate_history")
+                .schema("preorder")
+                .table("pubdate_history")
                 .insert({
                     "product_id": product_metadata.product_id,
                     "old_effective_pub_date": stored_pub_date,
