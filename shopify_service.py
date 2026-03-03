@@ -54,7 +54,15 @@ def _extract_date_tags_raw(tags: List[str]) -> List[str]:
 
 
 def _is_in_preorder_collection(collection_handles: List[str]) -> bool:
-    return any(h == "preorder" for h in collection_handles)
+    """
+    Determine preorder collection membership.
+    Handles historical handle variations and normalizes case.
+    """
+    normalized = {h.strip().lower() for h in collection_handles if h}
+    return any(
+        handle in normalized
+        for handle in {"preorder", "pre-order"}
+    )
 
 
 def _sum_inventory(variant_nodes: List[Dict[str, Any]]) -> int:
@@ -219,6 +227,9 @@ async def build_product_metadata_from_shopify(
         metafield_nodes,
         "pub_date",
     )
+
+    print(product_id, collection_handles)
+
     return ProductMetadata(
         product_id=product_id,
         tags=_split_tags(product.get("tags")),

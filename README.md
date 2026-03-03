@@ -477,6 +477,83 @@ Coverage Philosophy:
 Version Tag: `v1.0-lifecycle-hardened`
 
 ---
+
+## ✅ Phase 12.5 — Webhook‑Driven Reclassification Integration & System Hardening
+
+Implemented:
+- End‑to‑end webhook → classification → persistence flow
+- HMAC‑verified ingest via webhook‑gateway
+- Deterministic reclassification trigger on:
+  - `products/update`
+  - `inventory_levels/update`
+- Safe Supabase persistence with schema‑scoped writes
+- JSON‑safe metadata snapshot serialization
+- Typed `ReclassifyResponse` contract enforcement
+- Failure isolation (webhook always returns 200)
+
+Architectural Guarantees:
+- Gateway remains ingest‑only (no classification logic)
+- Preorder‑service owns all state mutation
+- Reclassification is idempotent per product
+- Pub date history + inventory arrival tracking execute before state upsert
+- No circular dependency between webhook layer and domain engine
+
+Boundary Confirmation:
+- No Shopify writes
+- No Slack / GitHub side effects
+- No publishing decisions
+- Pure state derivation + persistence
+
+Operational Status:
+- Fully deployed
+- Webhook traffic stable
+- Classification pipeline deterministic
+- Zero runtime warnings
+
+Status: COMPLETE
+
+---
+
+
+## 🧪 Phase 12.6 — Preorder Schema Validation & Contract Lock
+
+Objective:
+Before defining Phase 13 (Release Engine), we formally validate and lock the full `preorder` schema contract.
+
+Authoritative Tables in `preorder` schema:
+
+- `tracking`
+- `approvals`
+- `product_status`
+- `inventory_arrival`
+- `lifecycle_snapshot`
+- `pubdate_history`
+- `commitment_ledger`
+- `inventory_item_map`
+- `product_overrides`
+
+Schema Guarantees to Validate:
+
+1. All tables exist in `preorder` schema (not `public`).
+2. Primary keys enforced where required.
+3. Idempotent upserts use explicit conflict targets.
+4. No cross-schema implicit references (`public.preorder.*` prohibited).
+5. All timestamps are stored as UTC (`timestamptz`).
+6. JSON columns accept serialized payloads only (no Python-native types).
+7. Foreign key relationships are explicit and deterministic.
+
+Testing Requirements:
+
+- Integration test ensuring each table is reachable via Supabase client using `.schema("preorder")`.
+- Migration verification script to assert existence of all nine tables.
+- Contract test ensuring `product_status` and `inventory_arrival` upserts succeed in isolation.
+- Contract test verifying `pubdate_history` insert behavior (baseline + change case).
+- Validation that lifecycle derivation reads from `commitment_ledger` + `lifecycle_snapshot` without schema ambiguity.
+
+Status: IN PROGRESS
+
+---
+
 ## 🔒 Current Stability Status
 
 Classification engine is fully deterministic and structurally strict.

@@ -1,3 +1,9 @@
+"""
+If you later decide you do want to record “pub date removed” as an event, the correct way would be:
+	•	change the schema to allow NULL new_effective_pub_date, or
+	•	record removals in a different column / event table.
+"""
+
 from typing import List
 
 from classification.engine import classify_preorder_product
@@ -77,9 +83,21 @@ def classify_and_persist_product(
 
     existing_rows = existing_response.data if hasattr(existing_response, "data") else None
 
+    # Normalize values to `date` for comparison
+    def _normalize_date(value):
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            return date.fromisoformat(value)
+        return None
+
+    normalized_resolved_pub_date = _normalize_date(resolved_pub_date)
+
     if not existing_rows:
-        # Baseline initialization
-        if resolved_pub_date is not None:
+        # Baseline initialization: only write history if we actually have a pub date.
+        if normalized_resolved_pub_date is not None:
             (
                 supabase
                 .schema("preorder")
@@ -87,11 +105,7 @@ def classify_and_persist_product(
                 .insert({
                     "product_id": product_metadata.product_id,
                     "old_effective_pub_date": None,
-                    "new_effective_pub_date": (
-                        resolved_pub_date.isoformat()
-                        if resolved_pub_date
-                        else None
-                    ),
+                    "new_effective_pub_date": normalized_resolved_pub_date.isoformat(),
                     "change_source": "initial_baseline",
                     "engine_version": engine_version,
                     "changed_at": datetime.now(UTC).isoformat(),
@@ -100,21 +114,11 @@ def classify_and_persist_product(
             )
     else:
         stored_pub_date_raw = existing_rows[0].get("effective_pub_date")
-
-        # Normalize both dates to date objects for safe comparison
-        def _normalize_date(value):
-            if value is None:
-                return None
-            if isinstance(value, date):
-                return value
-            if isinstance(value, str):
-                return date.fromisoformat(value)
-            return None
-
         stored_pub_date = _normalize_date(stored_pub_date_raw)
-        normalized_resolved_pub_date = _normalize_date(resolved_pub_date)
 
-        if stored_pub_date != normalized_resolved_pub_date:
+        # If we are "losing" a pub date (new resolves to None), do NOT write a history row.
+        # `pubdate_history.new_effective_pub_date` is NOT NULL.
+        if stored_pub_date != normalized_resolved_pub_date and normalized_resolved_pub_date is not None:
             # Determine change source
             if engine_input.override_date is not None:
                 change_source = "override_date"
@@ -129,16 +133,8 @@ def classify_and_persist_product(
                 .table("pubdate_history")
                 .insert({
                     "product_id": product_metadata.product_id,
-                    "old_effective_pub_date": (
-                        stored_pub_date.isoformat()
-                        if stored_pub_date
-                        else None
-                    ),
-                    "new_effective_pub_date": (
-                        normalized_resolved_pub_date.isoformat()
-                        if normalized_resolved_pub_date
-                        else None
-                    ),
+                    "old_effective_pub_date": stored_pub_date.isoformat() if stored_pub_date else None,
+                    "new_effective_pub_date": normalized_resolved_pub_date.isoformat(),
                     "change_source": change_source,
                     "engine_version": engine_version,
                     "changed_at": datetime.now(UTC).isoformat(),
