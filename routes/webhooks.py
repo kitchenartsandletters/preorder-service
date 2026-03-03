@@ -138,7 +138,7 @@ async def _process_product_update(payload: dict, shop_domain: str):
 
         logger.info(
             f"[Classification] Completed for product_id={product_id} "
-            f"status={result.get('status')} anomaly={result.get('anomaly_type')}"
+            f"status={result.status} anomaly={result.anomaly_type}"
         )
 
     except Exception as e:
@@ -183,8 +183,8 @@ async def _process_inventory_update(payload: dict, shop_domain: str):
 
         logger.info(
             f"[Classification] Completed for inventory_item_id={inventory_item_id} "
-            f"product_id={result.get('product_id')} "
-            f"status={result.get('status')} anomaly={result.get('anomaly_type')}"
+            f"product_id={result.product_id} "
+            f"status={result.status} anomaly={result.anomaly_type}"
         )
 
     except Exception as e:
