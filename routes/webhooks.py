@@ -125,8 +125,9 @@ async def _process_product_update(payload: dict, shop_domain: str):
 
         # 2. Reclassify + persist
         supabase = get_supabase_client()
-        print(type(shopify_client))
         shopify_client = get_shopify_client()
+        print(type(shopify_client))
+
 
         result = await reclassify_single_product(
             supabase=supabase,
@@ -170,8 +171,8 @@ async def _process_inventory_update(payload: dict, shop_domain: str):
             return
 
         supabase = get_supabase_client()
-        print(type(shopify_client))
         shopify_client = get_shopify_client()
+        print(type(shopify_client))
 
         result = await reclassify_single_product(
             supabase=supabase,
