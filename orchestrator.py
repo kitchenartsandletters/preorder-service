@@ -154,13 +154,22 @@ def classify_and_persist_product(
         engine_version=engine_version,
     )
     
-    print(engine_input.__dict__)
+    def _serialize_dates(obj):
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, dict):
+            return {k: _serialize_dates(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_serialize_dates(v) for v in obj]
+        return obj
+
+    serialized_snapshot = _serialize_dates(engine_input.__dict__)
 
     persist_classification(
         supabase=supabase,
         product_id=product_metadata.product_id,
         classification=result,
-        metadata_snapshot=engine_input.__dict__,
+        metadata_snapshot=serialized_snapshot,
         engine_version=engine_version,
     )
 
