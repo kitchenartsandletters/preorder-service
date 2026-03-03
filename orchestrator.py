@@ -153,6 +153,8 @@ def classify_and_persist_product(
         inventory=product_metadata.inventory,
         engine_version=engine_version,
     )
+    
+    print(engine_input.__dict__)
 
     persist_classification(
         supabase=supabase,
