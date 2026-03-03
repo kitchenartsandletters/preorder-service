@@ -14,8 +14,8 @@ def fetch_override_date(supabase, product_id: int) -> Optional[str]:
     """
 
     response = (
-        supabase
-        .table("preorder.product_overrides")
+        supabase.schema("preorder")
+        .table("product_overrides")
         .select("override_date_raw")
         .eq("product_id", product_id)
         .single()
@@ -37,7 +37,7 @@ def update_override_date_and_reclassify(
 ) -> Dict[str, Any]:
 
     # 1️⃣ Upsert override row
-    supabase.table("preorder.product_overrides").upsert(
+    supabase.schema("preorder").table("product_overrides").upsert(
         {
             "product_id": product_metadata.product_id,
             "override_date_raw": new_override_date_raw,
