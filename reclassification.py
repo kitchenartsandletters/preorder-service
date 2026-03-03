@@ -24,6 +24,8 @@ def reclassify_single_product(
         engine_version=engine_version,
     )
 
+    print(type(result.effective_pub_date))
+
     return {
         "product_id": product_metadata.product_id,
         "status": result.status,

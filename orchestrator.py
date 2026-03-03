@@ -87,7 +87,11 @@ def classify_and_persist_product(
                 .insert({
                     "product_id": product_metadata.product_id,
                     "old_effective_pub_date": None,
-                    "new_effective_pub_date": resolved_pub_date,
+                    "new_effective_pub_date": (
+                        resolved_pub_date.isoformat()
+                        if resolved_pub_date
+                        else None
+                    ),
                     "change_source": "initial_baseline",
                     "engine_version": engine_version,
                     "changed_at": datetime.now(UTC).isoformat(),
@@ -125,8 +129,16 @@ def classify_and_persist_product(
                 .table("pubdate_history")
                 .insert({
                     "product_id": product_metadata.product_id,
-                    "old_effective_pub_date": stored_pub_date,
-                    "new_effective_pub_date": normalized_resolved_pub_date,
+                    "old_effective_pub_date": (
+                        stored_pub_date.isoformat()
+                        if stored_pub_date
+                        else None
+                    ),
+                    "new_effective_pub_date": (
+                        normalized_resolved_pub_date.isoformat()
+                        if normalized_resolved_pub_date
+                        else None
+                    ),
                     "change_source": change_source,
                     "engine_version": engine_version,
                     "changed_at": datetime.now(UTC).isoformat(),
