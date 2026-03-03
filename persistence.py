@@ -34,7 +34,8 @@ def persist_classification(
 
     (
         supabase
-        .table("preorder.product_status")
+        .schema("preorder")
+        .table("product_status")
         .upsert(payload, on_conflict="product_id")
         .execute()
     )

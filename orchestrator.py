@@ -68,7 +68,8 @@ def classify_and_persist_product(
     # Fetch existing product_status (if any)
     existing_response = (
         supabase
-        .table("preorder.product_status")
+        .schema("preorder")
+        .table("product_status")
         .select("effective_pub_date")
         .eq("product_id", product_metadata.product_id)
         .execute()
