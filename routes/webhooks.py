@@ -7,7 +7,7 @@ import logging
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.connection import get_pool
 from shopify_service import build_product_metadata_from_shopify
-from orchestrator import reclassify_single_product
+from services.reclassification_service import reclassify_single_product
 import uuid
 from dependencies import get_supabase_client, get_shopify_client
 
