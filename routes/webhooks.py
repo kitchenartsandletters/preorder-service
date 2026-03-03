@@ -9,7 +9,8 @@ from db.connection import get_pool
 from shopify_service import build_product_metadata_from_shopify
 from services.reclassification_service import reclassify_single_product
 import uuid
-from dependencies import get_supabase_client, get_shopify_client
+from dependencies import get_supabase_client
+from shopify_client import ShopifyClient
 
 
 router = APIRouter(prefix="/webhooks")
@@ -125,7 +126,7 @@ async def _process_product_update(payload: dict, shop_domain: str):
 
         # 2. Reclassify + persist
         supabase = get_supabase_client()
-        shopify_client = get_shopify_client()
+        shopify_client = ShopifyClient()  # get_shopify_client() is not async, so we can instantiate directly here
         print(type(shopify_client))
 
 
@@ -171,7 +172,7 @@ async def _process_inventory_update(payload: dict, shop_domain: str):
             return
 
         supabase = get_supabase_client()
-        shopify_client = get_shopify_client()
+        shopify_client = ShopifyClient()  # get_shopify_client() is not async, so we can instantiate directly here
         print(type(shopify_client))
 
         result = await reclassify_single_product(
