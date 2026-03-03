@@ -18,7 +18,7 @@ def fetch_override_date(supabase, product_id: int) -> Optional[str]:
         .table("product_overrides")
         .select("override_date_raw")
         .eq("product_id", product_id)
-        .single()
+        .maybe_single()
         .execute()
     )
 
