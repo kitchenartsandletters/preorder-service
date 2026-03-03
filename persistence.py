@@ -22,11 +22,17 @@ def persist_classification(
     - Always performs an idempotent upsert
     """
 
+    effective_pub_date = (
+        classification.effective_pub_date.isoformat()
+        if classification.effective_pub_date
+        else None
+    )
+
     payload = {
         "product_id": product_id,
         "status": classification.status,
         "anomaly_type": classification.anomaly_type,
-        "effective_pub_date": classification.effective_pub_date,
+        "effective_pub_date": effective_pub_date,
         "last_classified_at": datetime.now(UTC).isoformat(),
         "metadata_snapshot": metadata_snapshot,
         "engine_version": engine_version,
