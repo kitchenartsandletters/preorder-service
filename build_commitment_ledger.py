@@ -408,11 +408,9 @@ async def insert_rows(pool, rows: List[LedgerRow], dry_run: bool) -> int:
     if dry_run:
         return len(rows)
 
-    inserted = 0
-    # execute row-by-row (simple + safe). If you want, we can batch with executemany later.
-    for r in rows:
-        await pool.execute(
-            INSERT_LEDGER_SQL,
+    # Use batch insert for performance instead of row‑by‑row execution.
+    params = [
+        (
             r.tracking_id,
             r.event_id,
             r.topic,
@@ -425,8 +423,13 @@ async def insert_rows(pool, rows: List[LedgerRow], dry_run: bool) -> int:
             r.delta_qty,
             r.occurred_at,
         )
-        inserted += 1
-    return inserted
+        for r in rows
+    ]
+
+    await pool.executemany(INSERT_LEDGER_SQL, params)
+
+    # We return the number of attempted inserts (conflicts are ignored by SQL)
+    return len(rows)
 
 
 # -----------------------------
