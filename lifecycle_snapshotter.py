@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+import sys
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -76,14 +77,23 @@ class SnapshotCandidate:
 
 
 async def fetch_snapshot_candidates(pool, limit: int = 5000) -> list[SnapshotCandidate]:
-    """Products that have crossed pub-date boundary but do not yet have a snapshot."""
-    # effective_pub_date stored as date; compare to ET today as date
+    """
+    Ledger-driven candidate discovery.
+
+    Products eligible for snapshot creation are derived from
+    commitment_ledger activity rather than product_status alone.
+
+    This guarantees the snapshotter processes every product that
+    has ever had preorder commitment activity.
+    """
     rows = await pool.fetch(
         """
-        select ps.product_id, ps.effective_pub_date
-        from preorder.product_status ps
+        select distinct cl.product_id, ps.effective_pub_date
+        from preorder.commitment_ledger cl
+        join preorder.product_status ps
+          on ps.product_id = cl.product_id
         left join preorder.lifecycle_snapshot ls
-          on ls.product_id = ps.product_id
+          on ls.product_id = cl.product_id
         where ps.effective_pub_date is not null
           and ps.effective_pub_date <= $1::date
           and ls.product_id is null
@@ -243,6 +253,37 @@ async def presale_is_fulfilled_phase13_proxy(pool, product_id: int) -> bool:
 # -------------------------
 
 
+async def truncate_snapshots(pool) -> None:
+    """
+    Rebuild helper: remove all lifecycle snapshots so they can be deterministically
+    recomputed from ledger + metadata.
+    """
+    await pool.execute("""
+        truncate table preorder.lifecycle_snapshot
+    """)
+
+
+async def run_rebuild(limit: int = 50000) -> dict:
+    """
+    Deterministic rebuild mode.
+
+    Steps:
+    1. Truncate lifecycle_snapshot
+    2. Recompute snapshots from ledger-derived candidates
+    """
+    pool = await get_pool()
+
+    logger.info("[lifecycle_snapshotter] starting rebuild mode")
+
+    await truncate_snapshots(pool)
+
+    result = await run_daily(limit=limit)
+
+    logger.info("[lifecycle_snapshotter] rebuild complete", extra=result)
+
+    return result
+
+
 async def run_daily(limit: int = 5000) -> dict:
     """Run snapshot creation + closure marking."""
     pool = await get_pool()
@@ -272,11 +313,6 @@ async def run_daily(limit: int = 5000) -> dict:
         )
         created += 1
 
-        # trivial close when cohort total == 0
-        if presale_total == 0:
-            await mark_closed(pool, c.product_id)
-            closed += 1
-
     # 2) closure marking
     open_pids = await fetch_open_snapshots(pool, limit=limit)
     for pid in open_pids:
@@ -298,7 +334,11 @@ async def run_daily(limit: int = 5000) -> dict:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_daily())
+
+    if "--rebuild" in sys.argv:
+        asyncio.run(run_rebuild())
+    else:
+        asyncio.run(run_daily())
 
 
 if __name__ == "__main__":

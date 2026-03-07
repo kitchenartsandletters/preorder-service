@@ -478,6 +478,83 @@ Version Tag: `v1.0-lifecycle-hardened`
 
 ---
 
+
+## ✅ Phase 12.4 — Commitment Ledger Event Hardening
+
+Objective:
+Ensure the `preorder.commitment_ledger` correctly captures all positive preorder commitments while remaining replay-safe and idempotent.
+
+Background Issue:
+Some Shopify orders originate as **Draft Orders** and only generate the canonical order event when payment is captured. In those cases:
+
+- `orders/create` may not represent the final payable order event
+- The definitive signal becomes `orders/paid`
+
+If only `orders/create` is processed, positive commitment rows may be missing.
+
+Implemented Fix:
+
+Webhook‑gateway now forwards:
+
+- `orders/create`
+- `orders/paid`
+
+Both events are processed by `build_commitment_ledger.py`.
+
+Idempotency Rules:
+
+Positive commitment rows are protected by a partial uniqueness rule:
+
+```
+(order_id, line_item_id) WHERE delta_qty > 0
+```
+
+This guarantees:
+
+- `orders/create` and `orders/paid` overlap cannot double‑count commitments
+- Ledger rebuilds are replay-safe
+- Historical backfills are safe to rerun
+
+Replay Safety:
+
+`build_commitment_ledger.py` uses:
+
+```
+INSERT ... ON CONFLICT DO NOTHING
+```
+
+Meaning:
+
+- Ledger generation can be safely rerun
+- Reprocessing historical webhook payloads will not duplicate rows
+
+Operational Scope Decision:
+
+Negative commitment balances were discovered for a number of **historical preorder products**. Investigation showed these are typically caused by legacy event gaps prior to the `orders/paid` ingest fix.
+
+Because these titles are:
+
+- `historical_preorder`
+- already past their publication date
+
+these cases do **not affect active preorder lifecycle logic**.
+
+Therefore:
+
+- Historical reconciliation will be handled as a separate maintenance project
+- The ledger is considered **correct for all active preorder products** going forward
+
+Design Guarantees:
+
+- Ledger is append‑only
+- Positive commitments are idempotent
+- Order lifecycle events remain replayable
+- Preorder lifecycle derivation remains deterministic
+
+Status: COMPLETE
+
+---
+
 ## ✅ Phase 12.5 — Webhook‑Driven Reclassification Integration & System Hardening
 
 Implemented:
