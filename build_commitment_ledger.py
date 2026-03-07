@@ -5,6 +5,7 @@ Replay preorder.tracking into preorder.commitment_ledger (idempotent).
 
 Topics supported:
 - orders/create        => +qty per line item
+- orders/paid          => +qty per line item (alternate positive commitment source)
 - orders/fulfilled     => -fulfilled_qty per line item (best-effort)
 - orders/cancelled     => -unfulfilled_qty per line item (best-effort)
 - refunds/create       => -refund_line_item.quantity per refund line item
@@ -37,6 +38,7 @@ from db.connection import get_pool
 
 SUPPORTED_TOPICS = {
     "orders/create",
+    "orders/paid",        # alternate positive commitment source (draft-order conversions)
     "orders/fulfilled",
     "orders/cancelled",
     "refunds/create",
@@ -84,8 +86,15 @@ def pick_occurred_at(topic: str, payload: Dict[str, Any], fallback_created_at: d
     """
     candidates: List[Any] = []
 
-    if topic == "orders/create":
-        candidates = [payload.get("created_at"), payload.get("createdAt")]
+    if topic in ("orders/create", "orders/paid"):
+        candidates = [
+            payload.get("created_at"),
+            payload.get("createdAt"),
+            payload.get("processed_at"),
+            payload.get("processedAt"),
+            payload.get("updated_at"),
+            payload.get("updatedAt"),
+        ]
     elif topic == "orders/fulfilled":
         # Shopify fulfillment webhooks vary; try common keys
         candidates = [
@@ -253,16 +262,27 @@ def extract_ledger_rows(
     rows: List[LedgerRow] = []
     occurred_at = pick_occurred_at(topic, payload, created_at)
 
-    order_id = _as_int(payload.get("id") or payload.get("order_id") or payload.get("orderId"))
+    # Resolve order_id safely. For order webhooks, payload.id is the order id.
+    order_id = None
+    if topic != "refunds/create":
+        order_id = _as_int(payload.get("id") or payload.get("order_id") or payload.get("orderId"))
     # Natural ids (used for dedupe / traceability)
     fulfillment_id = extract_fulfillment_id(payload) if topic == "orders/fulfilled" else None
     refund_id = extract_refund_id(payload) if topic == "refunds/create" else None
 
-    # Refund payloads usually have order_id nested (not at top-level id)
+    # Refund payloads must resolve order_id from explicit order references.
+    # Never fall back to payload.id here because that is the refund id.
     if topic == "refunds/create":
-        order_id = _as_int(payload.get("order_id") or payload.get("orderId") or payload.get("order") or payload.get("order") and isinstance(payload.get("order"), dict) and payload.get("order").get("id"))
+        order_id = _as_int(payload.get("order_id") or payload.get("orderId"))
+        if order_id is None:
+            order_obj = payload.get("order")
+            if isinstance(order_obj, dict):
+                order_id = _as_int(order_obj.get("id"))
 
-    if topic == "orders/create":
+    # orders/paid is treated as an alternate positive commitment source.
+    # Idempotency is enforced downstream by the commitment_ledger unique index
+    # so that only one positive commitment per (order_id, line_item_id) is stored.
+    if topic in ("orders/create", "orders/paid"):
         for li in iter_order_line_items(payload):
             product_id = _as_int(li.get("product_id") or li.get("productId"))
             if product_id is None:
@@ -338,6 +358,11 @@ def extract_ledger_rows(
             ))
 
     elif topic == "refunds/create":
+        # Hard safety check: refunds must have both a refund_id and order_id.
+        # Historical corruption occurred when payload.id (refund id) was used
+        # as order_id. If we cannot resolve a proper order_id, skip the event.
+        if refund_id is None or order_id is None:
+            return rows
         for rli in iter_refund_line_items(payload):
             qty = _as_int(rli.get("quantity"))
             if qty is None or qty == 0:
@@ -352,7 +377,15 @@ def extract_ledger_rows(
             if product_id is None:
                 continue
             variant_id = _as_int(li.get("variant_id") or li.get("variantId"))
-            line_item_id = _as_int(li.get("id") or li.get("line_item_id") or li.get("lineItemId") or rli.get("line_item_id"))
+            # Prefer explicit refund_line_item reference, then nested line_item id
+            line_item_id = _as_int(
+                rli.get("line_item_id")
+                or li.get("id")
+                or li.get("line_item_id")
+                or li.get("lineItemId")
+            )
+            if line_item_id is None:
+                continue
 
             rows.append(LedgerRow(
                 tracking_id=tracking_id,
@@ -369,7 +402,11 @@ def extract_ledger_rows(
             ))
 
     return rows
-
+    # Invariant for refunds/create rows:
+    #   order_id  -> Shopify Order ID
+    #   refund_id -> Shopify Refund ID
+    # These must never be swapped. Historical corruption occurred when
+    # payload.id (refund id) was incorrectly treated as order_id.
 
 # -----------------------------
 # DB IO
