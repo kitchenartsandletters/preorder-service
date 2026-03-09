@@ -1,0 +1,17 @@
+-- negative commitment detection
+select product_id, sum(delta_qty)
+from preorder.commitment_ledger
+group by product_id
+having sum(delta_qty) < 0;
+
+-- duplicate event detection
+select topic,event_id,line_item_id,count(*)
+from preorder.commitment_ledger
+group by topic,event_id,line_item_id
+having count(*) > 1;
+
+-- refund mapping validation
+select *
+from preorder.commitment_ledger
+where topic='refunds/create'
+and order_id = refund_id;

@@ -47,6 +47,14 @@ UTC = timezone.utc
 ENGINE_VERSION = "v13-lifecycle-snapshotter"
 
 
+def generate_run_id() -> str:
+    """
+    Lightweight run identifier used for debugging and log correlation.
+    Helps trace which snapshotter run produced specific log output.
+    """
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
 def et_midnight_to_utc(eff_pub_date: date) -> datetime:
     """Convert ET midnight at effective_pub_date to UTC timestamptz."""
     et_midnight = datetime(
@@ -288,11 +296,17 @@ async def run_daily(limit: int = 5000) -> dict:
     """Run snapshot creation + closure marking."""
     pool = await get_pool()
 
+    run_id = generate_run_id()
+
     created = 0
     closed = 0
 
     # 1) snapshot creation
     candidates = await fetch_snapshot_candidates(pool, limit=limit)
+    logger.info(
+        "[lifecycle_snapshotter] candidate scan",
+        extra={"run_id": run_id, "candidate_count": len(candidates)}
+    )
     for c in candidates:
         presale_total = await compute_presale_commitment_total(
             pool, c.product_id, c.effective_pub_date
@@ -315,12 +329,17 @@ async def run_daily(limit: int = 5000) -> dict:
 
     # 2) closure marking
     open_pids = await fetch_open_snapshots(pool, limit=limit)
+    logger.info(
+        "[lifecycle_snapshotter] open snapshot scan",
+        extra={"run_id": run_id, "open_snapshot_count": len(open_pids)}
+    )
     for pid in open_pids:
         if await presale_is_fulfilled_phase13_proxy(pool, pid):
             await mark_closed(pool, pid)
             closed += 1
 
     summary = {
+        "run_id": run_id,
         "created_snapshots": created,
         "closed_snapshots": closed,
         "limit": limit,

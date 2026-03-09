@@ -263,13 +263,282 @@ Status: COMPLETE
 
 ---
 
-## ⏳ Phase 9 — Weekly Release Engine
-- Generate release-ready lists
-- Exclude anomalies
-- Include early stock arrivals
-- Support approval gating
-- Produce deterministic weekly snapshot outputs
-- Prepare for Slack / reporting integration
+## 🚀 Phase 13 — Weekly Release Engine
+
+Objective:
+Produce a deterministic weekly release dataset identifying preorder titles that are ready to be counted for NYT reporting and internal operational tracking.
+
+The release engine operates strictly on **derived state** from existing preorder infrastructure:
+
+- `product_status`
+- `inventory_arrival`
+- `commitment_ledger`
+- `lifecycle_snapshot`
+
+No structural classification or ledger mutation occurs here.
+
+---
+
+### Engine Responsibilities
+
+1. Identify preorder titles whose **effective publication week** has arrived.
+
+2. Pull frozen presale cohort totals from `lifecycle_snapshot`.
+
+3. Exclude:
+   - anomaly states
+   - non‑preorder products
+   - products without valid effective_pub_date
+
+4. Include:
+   - active_preorder titles that crossed the pub-date boundary
+   - early_stock_arrival titles whose pub date week has arrived
+   - historical_preorder titles that transitioned during the week
+
+5. Produce deterministic weekly dataset used for:
+   - NYT reporting
+   - internal sales reporting
+   - preorder operational monitoring
+
+---
+
+### Release Week Definition
+
+Publication weeks follow **ET-normalized weekly boundaries**:
+
+```
+release_week_start = Monday 00:00 ET
+release_week_end   = Sunday 23:59:59 ET
+```
+
+Products qualify when:
+
+```
+effective_pub_date ∈ [release_week_start, release_week_end]
+```
+
+---
+
+### Data Output Schema
+
+The release engine will produce a structured dataset containing:
+
+- product_id
+- effective_pub_date
+- presale_commitment_total
+- first_inventory_arrival_at
+- lifecycle_state
+- arrival_timing
+- classification_status
+
+This dataset is derived only — it is **not persisted**.
+
+---
+
+### Execution Flow
+
+1. Determine target release week (default = current ET week).
+2. Query `product_status` for preorder-classified products.
+3. Join:
+   - `lifecycle_snapshot`
+   - `inventory_arrival`
+   - `vw_arrival_timing`
+   - `vw_lifecycle_state`
+4. Filter for products whose `effective_pub_date` falls within the target week.
+5. Exclude anomalies.
+6. Produce deterministic output dataset.
+
+---
+
+### Determinism Guarantees
+
+- Engine reads **only frozen lifecycle snapshots**
+- No dependence on live order state
+- Re-running the engine for the same week produces identical results
+
+---
+
+### Presale Metrics Clarification
+
+The preorder system tracks **three distinct operational quantities** that must not be conflated. Earlier confusion around presale totals and fulfillment state revealed the need to explicitly define these metrics.
+
+1. presale_sales_total
+
+Definition:
+Total preorder units sold before the ET publication boundary.
+
+Calculation:
+
+    orders/create
+    + orders/paid
+    - orders/cancelled
+    - refunds/create
+
+Important rules:
+
+- Fulfillment events DO NOT affect this number.
+- Once an order occurs before the pub‑date boundary it permanently belongs to the presale cohort.
+- This is the number used for:
+  - NYT reporting
+  - internal preorder sales reporting
+  - admin dashboard presale totals.
+
+2. open_presale_commitments
+
+Definition:
+Number of presale units that still require fulfillment.
+
+Calculation:
+
+    presale_sales_total
+    - orders/fulfilled
+
+This metric is operational only and is used to monitor fulfillment progress.
+
+3. presale_fulfillment_verified
+
+Definition:
+A verification state confirming that **every presale order line has a corresponding fulfillment record**.
+
+This is stronger than arithmetic equality and protects against:
+
+- stuck orders
+- partial fulfillments
+- operational mistakes
+- manual order holds
+
+Lifecycle closure must therefore satisfy:
+
+    effective_pub_date has passed
+    AND presale_fulfillment_verified = true
+
+Arithmetic equality alone is insufficient.
+
+---
+
+### Lifecycle State Naming Correction
+
+The term `backordered` previously appeared in `vw_lifecycle_state`. This term is misleading in a preorder context.
+
+Two different concepts were unintentionally conflated:
+
+Operational backorder
+
+    inventory < 0
+
+Preorder fulfillment backlog
+
+    presales exist but have not yet been fulfilled
+
+These are not the same condition.
+
+The preorder lifecycle vocabulary will therefore avoid the word "backorder" entirely.
+
+Future lifecycle derivation should use states such as:
+
+- awaiting_inventory
+- fulfilling_presales
+- presales_complete
+
+This avoids confusion with standard retail backorder semantics.
+
+---
+
+### Weekly Release Engine Metric Source
+
+The Weekly Release Engine must use **presale_sales_total** rather than the net commitment value currently stored in `presale_commitment_total`.
+
+Reason:
+
+`presale_commitment_total` represents **remaining commitments** after fulfillment activity:
+
+    orders/create
+    - orders/fulfilled
+
+This undercounts presales for reporting purposes when titles ship early.
+
+Correct reporting metric:
+
+    presale_sales_total
+
+Future implementation will therefore:
+
+- derive presale_sales_total directly from `commitment_ledger`
+- ignore fulfillment deltas when calculating presale cohort size
+- continue using commitment totals only for lifecycle closure logic
+
+---
+
+### Planned Follow‑Up Work
+
+The following engineering tasks remain before Phase 13 is considered production‑ready:
+
+1. Add SQL helper for presale_sales_total calculation.
+2. Update `weekly_release_engine.py` to use this metric.
+3. Replace `backordered` lifecycle derivation in `vw_lifecycle_state`.
+4. Add presale fulfillment verification query.
+5. Add unit tests validating presale_sales_total vs commitment totals.
+
+These tasks ensure reporting accuracy while preserving the existing deterministic lifecycle architecture.
+
+---
+
+### Reporting State (Derived)
+
+Structural classification and lifecycle state do not fully describe reporting readiness.
+
+The release engine derives an additional operational state:
+
+reporting_state
+
+Possible values:
+
+pending_release
+eligible_for_reporting
+reported
+
+Meaning:
+State                   ||  Meaning
+=======================================================
+pending_release         ||  pub date has not yet occurred
+eligible_for_reporting  ||  pub date week reached and presale cohort frozen
+reported                ||  title already counted in NYT/internal reporting
+
+Important rule:
+reporting_state is NOT part of structural classification.
+It is not persisted in product_status.
+It is derived dynamically by the Weekly Release Engine.
+
+---
+
+### CLI Interface (Planned)
+
+```
+python weekly_release_engine.py --week 2026-04-07
+```
+
+Default behavior:
+
+```
+python weekly_release_engine.py
+```
+
+Uses current ET week.
+
+---
+
+### Future Integrations
+
+Phase 13 output will feed:
+
+- Slack release notifications
+- GitHub release approval issues
+- NYT reporting pipelines
+- Admin dashboard release views
+
+These integrations will be implemented in later phases.
+
+---
 
 Status: NOT STARTED
 
@@ -627,7 +896,104 @@ Testing Requirements:
 - Contract test verifying `pubdate_history` insert behavior (baseline + change case).
 - Validation that lifecycle derivation reads from `commitment_ledger` + `lifecycle_snapshot` without schema ambiguity.
 
-Status: IN PROGRESS
+Validation Results (2026‑03‑07)
+
+Schema verification executed via:
+
+    python scripts/verify_preorder_schema.py
+
+Output confirmed:
+
+- All authoritative tables exist in the `preorder` schema.
+- No missing tables.
+- All writes correctly reference `.schema("preorder")`.
+
+Additional objects detected were expected **derived views**, not contract tables:
+
+- `active_preorders`
+- `vw_arrival_timing`
+- `vw_lifecycle_state`
+- `vw_lifecycle_state_debug`
+- `vw_pending_approvals`
+
+These views are intentionally excluded from the schema contract because they are **derived read layers**, not persisted state tables.
+
+Contract Scope Clarification:
+
+The schema contract for preorder-service covers **persistent tables only**:
+
+- tracking
+- approvals
+- product_status
+- inventory_arrival
+- lifecycle_snapshot
+- pubdate_history
+- commitment_ledger
+- inventory_item_map
+- product_overrides
+
+Views remain flexible implementation layers and may evolve without breaking the schema contract.
+
+Status: COMPLETE
+
+-----------------
+
+## Lifecycle Snapshot Invariants
+
+1. lifecycle_snapshot is fully rebuildable.
+
+Running:
+
+python lifecycle_snapshotter.py --rebuild
+
+will truncate and deterministically recompute all lifecycle snapshots
+from:
+
+- preorder.commitment_ledger
+- preorder.product_status
+- preorder.inventory_arrival
+
+2. Snapshot creation occurs once a product crosses its effective_pub_date boundary.
+
+3. Presale cohort is frozen as:
+
+sum(delta_qty) where occurred_at < ET midnight of effective_pub_date.
+
+4. Lifecycle closes only when:
+
+- first_positive_inventory_arrival exists
+AND
+- current committed preorder quantity = 0.
+
+5. Snapshot rebuilds are deterministic and should produce identical
+semantic checksums across runs.
+
+6. If effective_pub_date changes for a product (for example due to a publisher slip or manual override), the existing lifecycle_snapshot for that product must be invalidated and recomputed.
+
+Implementation rule:
+
+    delete from preorder.lifecycle_snapshot
+    where product_id = <product_id>;
+
+After invalidation, the snapshotter will rebuild the snapshot using the new publication date boundary.
+
+This guarantees that presale cohorts include all valid presales up to the corrected pub date.
+
+7. Snapshot freezing assumes pub dates are stable.
+
+If a pub date moves forward, orders occurring between the original pub date boundary and the corrected boundary must be captured by rebuilding the snapshot.
+
+Failing to do this will undercount presales.
+---------
+
+## Future Hardening Roadmap
+
+These improvements extend the preorder ledger architecture but are not
+required for current system correctness.
+
+Phase A — Ledger Audit Queries
+Phase B — Fully Auditable Ledger (double-entry model)
+Phase C — Operational Hardening
 
 ---
 

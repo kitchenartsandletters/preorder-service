@@ -23,13 +23,16 @@ import logging
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
+from pathlib import Path
 
-# Internal job imports (Option A)
+# Ensure project root is on path BEFORE internal imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Internal job imports
 from build_commitment_ledger import run as run_commitment_ledger
 from lifecycle_snapshotter import run_daily as run_lifecycle_snapshotter
 
 UTC = timezone.utc
-
 
 def now_utc_iso() -> str:
     return datetime.now(UTC).isoformat()
