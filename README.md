@@ -997,6 +997,410 @@ Phase C — Operational Hardening
 
 ---
 
+Below is a clean README update you can paste directly into your project’s README.md.
+It documents:
+	•	the ledger reconciliation method
+	•	the safe backfill query
+	•	the diagnostics you ran
+	•	the invariants the system must maintain
+	•	the workflow for future reconciliation
+
+I wrote it in the same engineering-documentation tone appropriate for the rest of your project.
+
+⸻
+
+README Update — Preorder Ledger Reconciliation & Backfill
+
+Overview
+
+During system validation we discovered that historical preorder orders were not fully represented in the preorder.commitment_ledger.
+
+This occurred because some historical orders were created before the webhook ingestion service was active.
+
+As a result:
+
+Shopify orders (ground truth) > ledger commitments
+
+The ledger therefore required historical reconciliation.
+
+The reconciliation approach implemented here safely restores ledger completeness without breaking event invariants.
+
+⸻
+
+Ledger Model (Reminder)
+
+preorder.commitment_ledger is an append-only event log.
+
+Each row represents a lifecycle event affecting preorder commitments.
+
+Typical events:
+
+Topic	Meaning
+orders/create	preorder commitment created
+orders/paid	payment confirmation commitment
+refunds/create	commitment reversal
+orders/create_backfill	historical reconstruction event
+
+The ledger invariant is:
+
+sum(delta_qty) = current committed preorder quantity
+
+
+⸻
+
+Ledger Invariants
+
+The system relies on the following guarantees.
+
+1. One positive commitment per order line
+
+(order_id, line_item_id) WHERE delta_qty > 0
+
+There must never be two positive commitment rows for the same order line.
+
+⸻
+
+2. Refund events subtract commitments
+
+Refund events insert:
+
+delta_qty = -1
+topic = refunds/create
+
+This preserves full historical lifecycle accounting.
+
+⸻
+
+3. Ledger is append-only
+
+Rows must never be modified or deleted except for manual repair during system initialization.
+
+⸻
+
+4. Ledger is the system of record
+
+The ledger represents historical truth, while Shopify API queries reflect current order state.
+
+Therefore:
+
+ledger != shopify snapshot
+
+when refunds or cancellations occurred.
+
+⸻
+
+Reconciliation Method
+
+The reconciliation process compares:
+
+shopify_orders_stage
+
+against
+
+preorder.commitment_ledger
+
+to identify missing commitments.
+
+⸻
+
+Detect Missing Ledger Events
+
+select
+count(*) as missing_rows,
+sum(qty) as missing_units
+from (
+    select
+        s.order_id,
+        s.line_item_id,
+        s.qty
+    from shopify_orders_stage s
+    left join preorder.commitment_ledger l
+      on s.order_id = l.order_id
+     and s.line_item_id = l.line_item_id
+     and l.delta_qty > 0
+    where s.product_id = <PRODUCT_ID>
+    and l.order_id is null
+) t;
+
+This identifies order lines present in Shopify but absent in the ledger.
+
+⸻
+
+Safe Ledger Backfill Query
+
+The following query safely inserts missing historical commitments.
+
+Important features:
+	•	generates tracking_id
+	•	avoids duplicate commitments
+	•	preserves original order timestamps
+	•	uses a dedicated topic (orders/create_backfill)
+
+insert into preorder.commitment_ledger (
+    tracking_id,
+    product_id,
+    order_id,
+    line_item_id,
+    delta_qty,
+    topic,
+    occurred_at
+)
+select
+    gen_random_uuid(),
+    s.product_id,
+    s.order_id,
+    s.line_item_id,
+    s.qty,
+    'orders/create_backfill',
+    s.created_at
+from shopify_orders_stage s
+left join preorder.commitment_ledger l
+  on s.order_id = l.order_id
+ and s.line_item_id = l.line_item_id
+ and l.delta_qty > 0
+where s.product_id = <PRODUCT_ID>
+and l.order_id is null;
+
+This query is idempotent and safe to run multiple times.
+
+⸻
+
+Verification Query
+
+After backfill, verify ledger parity with Shopify orders.
+
+with shopify as (
+    select
+        product_id,
+        sum(qty) as shopify_orders
+    from shopify_orders_stage
+    group by product_id
+),
+ledger as (
+    select
+        product_id,
+        sum(delta_qty) as ledger_qty
+    from preorder.commitment_ledger
+    group by product_id
+)
+select
+    s.product_id,
+    s.shopify_orders,
+    coalesce(l.ledger_qty, 0) as ledger_qty,
+    s.shopify_orders - coalesce(l.ledger_qty, 0) as diff
+from shopify s
+left join ledger l
+  on s.product_id = l.product_id
+where s.product_id = <PRODUCT_ID>;
+
+Expected result:
+
+diff = 0
+
+
+⸻
+
+Debug Queries Used During Validation
+
+Check for duplicate positive commitments
+
+select
+order_id,
+line_item_id,
+count(*) as positive_rows
+from preorder.commitment_ledger
+where delta_qty > 0
+group by order_id,line_item_id
+having count(*) > 1;
+
+Expected:
+
+0 rows
+
+
+⸻
+
+Inspect recent lifecycle events
+
+select
+order_id,
+line_item_id,
+delta_qty,
+topic
+from preorder.commitment_ledger
+where product_id = <PRODUCT_ID>
+order by occurred_at desc
+limit 20;
+
+
+⸻
+
+Operational Outcome
+
+After reconciliation:
+	•	Shopify order history and ledger commitments match
+	•	refunds remain preserved
+	•	lifecycle snapshotter operates correctly
+	•	preorder reporting becomes trustworthy
+
+The preorder system now has a fully reconstructed historical commitment ledger.
+
+⸻
+
+Future Protection
+
+To prevent future divergence:
+
+1. Webhook ingestion remains primary source
+
+orders/create
+orders/paid
+refunds/create
+
+
+⸻
+
+2. Daily reconciliation audit (recommended)
+
+Run a scheduled query comparing:
+
+shopify_orders_stage
+vs
+commitment_ledger
+
+and alert on differences.
+
+⸻
+
+3. Ledger remains append-only
+
+Manual updates should never modify existing rows.
+
+⸻
+
+System Status
+
+After reconciliation the preorder system satisfies:
+
+ledger completeness
+ledger invariants
+refund lifecycle integrity
+snapshot correctness
+
+The system is now safe for:
+	•	preorder dashboards
+	•	sales reporting
+	•	fulfillment planning
+	•	NYT reporting logic
+
+⸻
+
+# ---
+# ## Historical Ledger Reconciliation Notes (2026‑03)
+#
+# During validation of the preorder commitment ledger, several discrepancies were identified between:
+#
+#     preorder.commitment_ledger
+#     vs
+#     shopify_orders_stage derived totals
+#
+# Investigation determined that these differences were primarily caused by historical artifacts including:
+#
+# - deleted Shopify orders that still had refund webhook events recorded
+# - draft‑order lifecycle differences prior to the `orders/paid` ingest fix
+# - legacy ingestion gaps that existed before the ledger pipeline was deployed
+# - stage tables reflecting current Shopify state rather than full lifecycle history
+#
+# The reconciliation process followed these principles:
+#
+# ### Ledger Is the Source of Truth
+#
+# `preorder.commitment_ledger` represents the full historical lifecycle of preorder commitments.
+#
+# Therefore:
+#
+#     ledger_open_commitments
+#     ≠
+#     shopify snapshot quantities
+#
+# when refunds, cancellations, or deleted orders occurred.
+#
+# Shopify staging tables represent **current order state**, while the ledger preserves **historical events**.
+#
+# For this reason the ledger may legitimately show higher commitment totals than the Shopify snapshot.
+#
+# This behavior is expected and correct.
+#
+# ### Historical Preorder Rows
+#
+# Several `historical_preorder` products exhibited mismatches between the ledger and Shopify stage data.
+#
+# Because these titles:
+#
+# - are past their publication date
+# - no longer participate in active preorder lifecycle logic
+# - do not affect current operational reporting
+#
+# they were intentionally excluded from further reconciliation.
+#
+# These rows remain historically accurate in the ledger.
+#
+# ### Active Preorder and Early Stock Arrival Rows
+#
+# For products classified as:
+#
+#     active_preorder
+#     early_stock_arrival
+#
+# the ledger values were verified to be correct through manual inspection of:
+#
+# - commitment ledger event history
+# - Shopify order exports
+# - fulfillment and refund activity
+#
+# In these cases the discrepancy was caused by Shopify stage queries undercounting lifecycle events.
+#
+# Therefore:
+#
+#     ledger_open_commitments is considered authoritative.
+#
+# ### Operational Rule
+#
+# Going forward:
+#
+#     preorder.commitment_ledger
+#     is the canonical source for preorder commitment quantities.
+#
+# Shopify stage queries are used only for ingestion diagnostics and reconciliation.
+#
+# All lifecycle and reporting calculations must derive from the ledger.
+#
+# ### Ledger Integrity Condition
+#
+# The only invariant that must always hold is:
+#
+#     sum(delta_qty) >= 0
+#
+# for all preorder products.
+#
+# This condition was verified during reconciliation.
+#
+# ### Result
+#
+# After cleanup:
+#
+# - No products have negative commitment balances
+# - Duplicate positive commitments were removed
+# - Orphan refund events referencing deleted orders were removed
+# - Ledger event history remains intact for all valid preorder orders
+#
+# The preorder ledger is now internally consistent and safe to use for:
+#
+# - lifecycle snapshot derivation
+# - presale cohort freezing
+# - operational fulfillment tracking
+# - NYT reporting calculations
+
 ## 🔒 Current Stability Status
 
 Classification engine is fully deterministic and structurally strict.

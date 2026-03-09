@@ -1,17 +1,77 @@
--- negative commitment detection
-select product_id, sum(delta_qty)
+-- ============================================
+-- PREORDER LEDGER HEALTH CHECKS
+-- These queries detect structural corruption
+-- in preorder.commitment_ledger.
+-- ============================================
+
+
+-- 1. NEGATIVE COMMITMENT DETECTION
+-- Any product with negative commitments indicates
+-- lifecycle events exceeded creates.
+select
+  product_id,
+  sum(delta_qty) as ledger_balance
 from preorder.commitment_ledger
 group by product_id
 having sum(delta_qty) < 0;
 
--- duplicate event detection
-select topic,event_id,line_item_id,count(*)
+
+
+-- 2. DUPLICATE EVENT DETECTION
+-- Detect duplicate webhook ingestion.
+select
+  topic,
+  event_id,
+  line_item_id,
+  product_id,
+  delta_qty,
+  count(*) as duplicate_count
 from preorder.commitment_ledger
-group by topic,event_id,line_item_id
+group by
+  topic,
+  event_id,
+  line_item_id,
+  product_id,
+  delta_qty
 having count(*) > 1;
 
--- refund mapping validation
+
+
+-- 3. REFUND MAPPING VALIDATION
+-- Refund rows should never have order_id == refund_id.
 select *
 from preorder.commitment_ledger
-where topic='refunds/create'
+where topic = 'refunds/create'
 and order_id = refund_id;
+
+
+
+-- 4. GHOST COMMITMENT DETECTION
+-- Positive ledger creates that do not correspond
+-- to a Shopify order line.
+select
+  l.product_id,
+  l.order_id,
+  l.line_item_id
+from preorder.commitment_ledger l
+left join shopify_orders_stage s
+  on l.order_id = s.order_id
+ and l.line_item_id = s.line_item_id
+where l.delta_qty > 0
+and s.order_id is null;
+
+
+
+-- 5. MISSING CREATE EVENTS
+-- Lifecycle events without a corresponding create.
+select
+  product_id,
+  order_id,
+  line_item_id,
+  sum(delta_qty) as lifecycle_balance
+from preorder.commitment_ledger
+group by
+  product_id,
+  order_id,
+  line_item_id
+having sum(delta_qty) < 0;
