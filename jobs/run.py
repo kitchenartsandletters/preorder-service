@@ -22,6 +22,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+import traceback
 from typing import Any, Dict
 from pathlib import Path
 
@@ -104,12 +105,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stdout,
+    )
 
     parser = build_parser()
     args = parser.parse_args()
 
     started_at = now_utc_iso()
+
+    logging.info("Starting cron job", extra={
+        "job": args.job,
+        "topic": getattr(args, "topic", None),
+        "limit": args.limit,
+        "since": getattr(args, "since", None),
+        "dry_run": getattr(args, "dry_run", False),
+    })
 
     try:
         summary = asyncio.run(dispatch(args))
@@ -126,12 +139,18 @@ def main() -> None:
         sys.exit(0)
 
     except Exception as e:
+        tb = traceback.format_exc()
+
+        logging.error("Cron job failed")
+        logging.error(tb)
+
         error_result = {
             "job": args.job,
             "ok": False,
             "started_at": started_at,
             "finished_at": now_utc_iso(),
             "error": str(e),
+            "traceback": tb,
         }
 
         print(json.dumps(error_result, indent=2, default=str))
