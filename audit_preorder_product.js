@@ -8,9 +8,10 @@ const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-// Allow product id to be passed via CLI
-// node audit_preorder_product.js 7213582123141
-const PRODUCT_ID = process.argv[2] || 7213582123141
+// Optional product id via CLI
+// node audit_preorder_product.js 7213582123141  → single product
+// node audit_preorder_product.js                → ALL products
+const PRODUCT_ID = process.argv[2] || null
 
 const supabase = createClient(
   SUPABASE_URL,
@@ -102,7 +103,11 @@ async function fetchAllOrders() {
 
 async function run() {
 
-  console.log(`Auditing product ${PRODUCT_ID}`)
+  console.log(
+    PRODUCT_ID
+      ? `Auditing product ${PRODUCT_ID}`
+      : `Auditing ALL products across full order history`
+  )
 
   const orders = await fetchAllOrders()
 
@@ -119,7 +124,9 @@ async function run() {
 
       const productId = item.product?.legacyResourceId
 
-      if (productId != PRODUCT_ID) continue
+      // If auditing a specific product, filter.
+      // Otherwise capture every product.
+      if (PRODUCT_ID && productId != PRODUCT_ID) continue
 
       rows.push({
         order_id: orderId,
@@ -139,12 +146,21 @@ async function run() {
     return
   }
 
-  console.log("Clearing previous staging rows for this product...")
+  if (PRODUCT_ID) {
+    console.log("Clearing previous staging rows for this product...")
 
-  await supabase
-    .from("shopify_orders_stage")
-    .delete()
-    .eq("product_id", PRODUCT_ID)
+    await supabase
+      .from("shopify_orders_stage")
+      .delete()
+      .eq("product_id", PRODUCT_ID)
+  } else {
+    console.log("Clearing entire staging table (full audit mode)...")
+
+    await supabase
+      .from("shopify_orders_stage")
+      .delete()
+      .neq("product_id", -1)
+  }
 
   console.log(`Inserting ${rows.length} rows into Supabase`)
 

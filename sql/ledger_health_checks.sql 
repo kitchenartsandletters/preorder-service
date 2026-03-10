@@ -75,3 +75,45 @@ group by
   order_id,
   line_item_id
 having sum(delta_qty) < 0;
+
+
+-- 6. EVENT ORDERING VIOLATIONS
+-- Detect lifecycle events that occur before the corresponding create.
+-- This indicates webhook ingestion ordering problems.
+with create_events as (
+  select
+    product_id,
+    order_id,
+    line_item_id,
+    min(occurred_at) as create_time
+  from preorder.commitment_ledger
+  where delta_qty > 0
+  group by
+    product_id,
+    order_id,
+    line_item_id
+),
+lifecycle_events as (
+  select
+    product_id,
+    order_id,
+    line_item_id,
+    topic,
+    occurred_at
+  from preorder.commitment_ledger
+  where delta_qty < 0
+)
+select
+  l.product_id,
+  l.order_id,
+  l.line_item_id,
+  l.topic,
+  l.occurred_at,
+  c.create_time
+from lifecycle_events l
+left join create_events c
+  on l.product_id = c.product_id
+ and l.order_id = c.order_id
+ and l.line_item_id = c.line_item_id
+where c.create_time is null
+   or l.occurred_at < c.create_time;
