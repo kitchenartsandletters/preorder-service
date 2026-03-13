@@ -417,8 +417,7 @@ select
   id,
   event_id,
   topic,
-  created_at,
-  payload
+  created_at
 from preorder.tracking
 where topic = $1
   and ($2::timestamptz is null or created_at >= $2::timestamptz)
@@ -428,6 +427,12 @@ where topic = $1
   )
 order by created_at asc, id asc
 limit $5
+"""
+
+FETCH_PAYLOADS_SQL = """
+select id, payload
+from preorder.tracking
+where id = any($1::uuid[])
 """
 
 INSERT_LEDGER_SQL = """
@@ -497,12 +502,24 @@ async def run(topic: str, limit: int, since: Optional[str], dry_run: bool) -> Di
 
             total_tracking_rows += len(batch)
 
+            ids = [str(r["id"]) for r in batch]
+
+            payload_rows = await pool.fetch(
+                FETCH_PAYLOADS_SQL,
+                ids
+            )
+
+            payload_map = {
+                str(r["id"]): r["payload"]
+                for r in payload_rows
+            }
+
             to_insert: List[LedgerRow] = []
             for row in batch:
                 tracking_id = str(row["id"])
                 event_id = str(row["event_id"]) if row.get("event_id") else None
                 created_at = row["created_at"]
-                payload = row["payload"]
+                payload = payload_map.get(tracking_id)
 
                 if isinstance(payload, str):
                     try:
