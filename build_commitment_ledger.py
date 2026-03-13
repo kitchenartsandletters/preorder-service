@@ -435,6 +435,23 @@ from preorder.tracking
 where id = any($1::uuid[])
 """
 
+# -----------------------------
+# Replay Cursor SQL
+# -----------------------------
+GET_CURSOR_SQL = """
+select last_created_at, last_id
+from preorder.replay_cursor
+where topic = $1
+"""
+
+UPDATE_CURSOR_SQL = """
+insert into preorder.replay_cursor (topic, last_created_at, last_id)
+values ($1, $2::timestamptz, $3::uuid)
+on conflict (topic)
+do update set last_created_at = excluded.last_created_at,
+              last_id = excluded.last_id
+"""
+
 INSERT_LEDGER_SQL = """
 insert into preorder.commitment_ledger
 (tracking_id, event_id, topic, product_id, variant_id, order_id, line_item_id, fulfillment_id, refund_id, delta_qty, occurred_at)
@@ -492,6 +509,11 @@ async def run(topic: str, limit: int, since: Optional[str], dry_run: bool) -> Di
     for t in topics:
         last_created_at: Optional[datetime] = None
         last_id: Optional[str] = None
+        if since_dt is None:
+            row = await pool.fetchrow(GET_CURSOR_SQL, t)
+            if row:
+                last_created_at = row["last_created_at"]
+                last_id = str(row["last_id"]) if row.get("last_id") else None
         total_tracking_rows = 0
         total_ledger_rows = 0
 
@@ -542,6 +564,13 @@ async def run(topic: str, limit: int, since: Optional[str], dry_run: bool) -> Di
                 last_id = tracking_id
 
             total_ledger_rows += await insert_rows(pool, to_insert, dry_run=dry_run)
+            if not dry_run and last_created_at and last_id:
+                await pool.execute(
+                    UPDATE_CURSOR_SQL,
+                    t,
+                    last_created_at,
+                    last_id,
+                )
 
         summary["topics"][t] = {
             "tracking_rows_scanned": total_tracking_rows,
