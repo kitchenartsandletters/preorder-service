@@ -93,6 +93,38 @@ Additional rules:
 
 This section tracks the implementation state of preorder-service.
 
+---
+
+## 📦 Current System Version Snapshot
+
+Snapshot Date: 2026-03-07
+
+System Components:
+
+| Component | Status |
+|-----------|--------|
+| Classification Engine | Stable |
+| Reclassification API | Deployed |
+| Commitment Ledger Worker | Stable |
+| Lifecycle Snapshotter | Stable |
+| Inventory Arrival Tracking | Stable |
+| Pub Date History Tracking | Stable |
+| Weekly Release Engine | Prototype (CSV generation working) |
+| Supabase Schema Contract | Locked |
+| Test Suite | 111/111 passing |
+
+Operational Notes:
+
+- Structural preorder classification pipeline is fully operational.
+- Ledger replay architecture is hardened and replay-safe.
+- Lifecycle snapshots deterministically freeze presale cohorts.
+- Inventory arrival and pub-date tracking are active and idempotent.
+- Weekly Release Engine currently generates deterministic CSV output but does not yet update release state.
+
+This snapshot provides a quick operational overview of the preorder system state and is updated at major architectural milestones.
+
+---
+
 ## ✅ Phase 1 — Effective Publication Date
 Implemented:
 - `resolve_effective_pub_date()` utility
@@ -540,7 +572,34 @@ These integrations will be implemented in later phases.
 
 ---
 
-Status: NOT STARTED
+Status: PROTOTYPE IMPLEMENTED (CSV generation working)
+
+Current Capabilities:
+- `weekly_release_engine.py` successfully produces a deterministic CSV report
+- Output written to `output/nyt_release_report_<week_end>.csv`
+- Engine reads from:
+  - `preorder.product_status`
+  - `preorder.lifecycle_snapshot`
+  - `preorder.inventory_arrival`
+  - `preorder.commitment_ledger`
+- Environment variables loaded from `.env`
+- Supabase queries functioning correctly
+
+Observed Behavior:
+- Latest run produced a 242‑row dataset without runtime errors.
+- CSV formatting confirmed correct for downstream reporting consumption.
+
+Current Limitations (Next Iteration):
+- Presale totals still require migration to `presale_sales_total` calculation.
+- Weekly sales merging logic (Shopify week aggregation) not yet integrated.
+- Reporting state table (`preorder.release_state`) not yet implemented.
+- Engine currently generates the report but does not mark products as released.
+
+Operational Status:
+The weekly engine is now operational as a **data extraction prototype**, and will evolve into the full reporting engine described above in subsequent iterations.
+
+Note on Week Definition:
+The architecture documentation above still references **Monday→Sunday publication weeks**. The release reporting pipeline will instead use **Sunday→Saturday reporting weeks**, which aligns with NYT-style reporting cycles. This correction will be reflected in the final Phase 13 implementation.
 
 ---
 
