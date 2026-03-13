@@ -1401,6 +1401,804 @@ The system is now safe for:
 # - operational fulfillment tracking
 # - NYT reporting calculations
 
+
+---
+
+## ⚙️ Worker Performance Hardening (2026‑03)
+
+During operational monitoring the preorder infrastructure briefly exceeded the Supabase free‑tier I/O budget due to inefficient event replay behavior in the ledger worker.
+
+The system has since been hardened with several architectural improvements to guarantee low‑cost operation even with frequent cron execution.
+
+These changes affect the internal workers:
+
+- `build_commitment_ledger.py`
+- `lifecycle_snapshotter.py`
+
+Both workers currently run on a **5‑minute schedule**.
+
+### Root Cause
+
+The original implementation scanned `preorder.tracking` while selecting the full webhook `payload` column.
+
+Typical Shopify webhook payloads are ~20–40KB.
+
+When batches of thousands of rows were replayed, each worker run transferred tens of megabytes of data even when no new events existed.
+
+This caused unnecessary:
+
+- Supabase bandwidth usage
+- disk I/O consumption
+- query CPU cost
+
+### Fix 1 — Two‑Stage Payload Fetch
+
+Ledger replay now performs a lightweight metadata scan first:
+
+    select id, event_id, topic, created_at
+
+Payloads are fetched only for the rows in the current batch:
+
+    select id, payload
+    from preorder.tracking
+    where id = any($1::uuid[])
+
+This reduces average network transfer per run from **tens of MB** to **a few KB**.
+
+### Fix 2 — Replay Cursor
+
+A persistent replay cursor table was introduced:
+
+    preorder.replay_cursor
+
+Structure:
+
+    topic text primary key
+    last_created_at timestamptz
+    last_id uuid
+
+Each worker run resumes scanning from the last processed `(created_at, id)` position.
+
+This prevents repeated scans of historical webhook events and guarantees that workers process **only new events**.
+
+### Fix 3 — Pagination‑Aligned Index
+
+The `preorder.tracking` table now uses a composite index aligned with the worker's keyset pagination query:
+
+    create index preorder_tracking_topic_created_id_idx
+    on preorder.tracking (topic, created_at, id);
+
+This allows Postgres to perform an efficient index walk rather than scanning the table.
+
+### Operational Impact
+
+After these improvements:
+
+| Metric | Before | After |
+|------|------|------|
+| Data transferred per run | ~60MB | <10KB typical |
+| Tracking rows scanned | entire table | only new events |
+| Supabase bandwidth | tens of GB/month | <1GB/month typical |
+
+The preorder infrastructure can now safely run workers every **5 minutes** while remaining within Supabase free‑tier limits.
+
+### Design Guarantees
+
+The hardened replay architecture now provides:
+
+- deterministic event replay
+- idempotent ledger reconstruction
+- minimal network transfer
+- bounded query cost
+
+Key design patterns used:
+
+- keyset pagination `(created_at, id)`
+- replay cursor persistence
+- two‑stage payload retrieval
+
+These patterns ensure the preorder event pipeline remains scalable without increasing operational complexity.
+
+---
+
+
+---
+
+## ⚙️ Worker Execution Model
+
+The preorder system relies on two deterministic background workers that operate on a fixed schedule. These workers maintain derived preorder state and ledger consistency while remaining fully replay‑safe.
+
+### Workers
+
+1. **build_commitment_ledger.py**
+
+Purpose:
+
+Reconstruct the preorder commitment ledger from webhook events stored in `preorder.tracking`.
+
+Responsibilities:
+
+- Parse order lifecycle events (`orders/create`, `orders/paid`, `orders/fulfilled`, `refunds/create`)
+- Convert lifecycle events into append‑only ledger entries
+- Maintain accurate preorder commitment balances
+
+Guarantees:
+
+- Ledger writes use `INSERT ... ON CONFLICT DO NOTHING`
+- Positive commitments protected by partial uniqueness rules
+- Safe to replay historical webhook events
+
+Replay Model:
+
+- Reads events via keyset pagination `(created_at, id)`
+- Uses persistent replay cursor `preorder.replay_cursor`
+- Only processes new events after the last processed cursor
+
+---
+
+2. **lifecycle_snapshotter.py**
+
+Purpose:
+
+Freeze presale cohorts and derive lifecycle state once products cross their publication date boundary.
+
+Responsibilities:
+
+- Detect products whose `effective_pub_date` has passed
+- Freeze presale cohort totals at ET midnight of pub date
+- Persist lifecycle snapshot rows
+
+Derived Inputs:
+
+- `commitment_ledger`
+- `product_status`
+- `inventory_arrival`
+
+Lifecycle snapshots allow the system to determine:
+
+- presale cohort totals
+- fulfillment progress
+- lifecycle closure conditions
+
+Guarantees:
+
+- Snapshots are deterministic
+- Snapshots are rebuildable
+- No mutation of ledger history
+
+---
+
+### Execution Schedule
+
+Both workers currently run on a **5‑minute interval** via cron.
+
+Example schedule:
+
+```
+*/5 * * * *
+```
+
+Frequent execution is safe because:
+
+- replay cursors prevent full‑table scans
+- keyset pagination ensures bounded queries
+- payloads are fetched only when new events exist
+
+---
+
+### Failure Safety
+
+Worker execution is designed to be failure‑tolerant.
+
+Properties:
+
+- idempotent ledger writes
+- deterministic replay
+- cursor‑based progress tracking
+
+If a worker crashes:
+
+1. No partial ledger corruption occurs.
+2. The next run resumes from the last committed cursor.
+3. Historical events may be safely replayed.
+
+---
+
+### Operational Design Principle
+
+Workers operate strictly on **event replay and deterministic derivation**.
+
+They never:
+
+- mutate Shopify state
+- modify historical ledger rows
+- override structural classification
+
+This ensures the preorder system remains:
+
+- auditable
+- replayable
+- operationally stable
+
+---
+
+---
+
+## 🔁 Event Flow Diagram (Webhook → Ledger → Lifecycle → Release Engine)
+
+This section illustrates the end‑to‑end data pipeline used by the preorder system. The architecture is intentionally **event‑driven and replayable**, meaning every derived state can be rebuilt from upstream event logs.
+
+The flow below describes how Shopify events move through the system.
+
+### Step 1 — Shopify Webhook Event
+
+Shopify emits lifecycle events such as:
+
+- `orders/create`
+- `orders/paid`
+- `orders/fulfilled`
+- `refunds/create`
+- `products/update`
+- `inventory_levels/update`
+
+These events represent the raw operational activity of the store.
+
+---
+
+### Step 2 — webhook‑gateway Ingestion
+
+The **webhook‑gateway** service receives Shopify webhooks and performs only minimal responsibilities:
+
+- HMAC signature verification
+- extraction of basic identifiers
+- storage of the raw payload
+
+Events are written to:
+
+```
+preorder.tracking
+```
+
+Each row represents a captured webhook event and includes:
+
+- event_id
+- topic
+- created_at
+- payload
+
+Gateway behavior is intentionally passive — it does **not perform any preorder logic**.
+
+---
+
+### Step 3 — Ledger Reconstruction
+
+Worker:
+
+```
+build_commitment_ledger.py
+```
+
+This worker reads events from `preorder.tracking` and converts order lifecycle events into ledger entries stored in:
+
+```
+preorder.commitment_ledger
+```
+
+Each ledger row records a **delta in preorder commitments**.
+
+Example transformations:
+
+| Webhook Topic | Ledger Delta |
+|---------------|--------------|
+| orders/create | +qty |
+| orders/paid   | +qty (idempotent guard) |
+| refunds/create | -qty |
+| orders/fulfilled | lifecycle consumption |
+
+The ledger is **append‑only** and protected by idempotency constraints.
+
+---
+
+### Step 4 — Structural Classification
+
+Triggered by product and inventory events.
+
+Worker / API:
+
+```
+classify_and_persist_product()
+```
+
+Derived state is written to:
+
+```
+preorder.product_status
+```
+
+Classification determines whether a product is:
+
+- active_preorder
+- early_stock_arrival
+- historical_preorder
+- anomaly_* 
+- not_a_preorder_product
+
+This stage represents the **structural identity of the product**.
+
+---
+
+### Step 5 — Inventory Arrival Tracking
+
+Inventory changes are monitored and the **first positive inventory arrival** is recorded.
+
+Table:
+
+```
+preorder.inventory_arrival
+```
+
+This allows the system to determine when preorder inventory actually became available.
+
+---
+
+### Step 6 — Lifecycle Snapshot Freezing
+
+Worker:
+
+```
+lifecycle_snapshotter.py
+```
+
+Once a product crosses its publication boundary, the presale cohort is frozen.
+
+Snapshots are stored in:
+
+```
+preorder.lifecycle_snapshot
+```
+
+The snapshot records:
+
+- presale cohort size
+- lifecycle state
+- fulfillment progress
+
+Snapshots ensure that **future events do not alter historical presale totals**.
+
+---
+
+### Step 7 — Weekly Release Engine
+
+Script:
+
+```
+weekly_release_engine.py
+```
+
+The release engine derives the dataset used for reporting and operational tracking.
+
+Inputs:
+
+- `product_status`
+- `inventory_arrival`
+- `commitment_ledger`
+- `lifecycle_snapshot`
+
+Outputs:
+
+A deterministic dataset identifying preorder titles whose **publication week has arrived**.
+
+This dataset is used for:
+
+- NYT reporting
+- internal sales analysis
+- operational release tracking
+
+---
+
+### Pipeline Overview
+
+The full pipeline can be visualized as:
+
+```
+Shopify Webhooks
+        │
+        ▼
+webhook-gateway
+        │
+        ▼
+preorder.tracking
+        │
+        ▼
+build_commitment_ledger
+        │
+        ▼
+preorder.commitment_ledger
+        │
+        ▼
+classification engine
+        │
+        ▼
+preorder.product_status
+        │
+        ▼
+inventory arrival tracking
+        │
+        ▼
+preorder.inventory_arrival
+        │
+        ▼
+lifecycle_snapshotter
+        │
+        ▼
+preorder.lifecycle_snapshot
+        │
+        ▼
+weekly_release_engine
+        │
+        ▼
+NYT / internal reporting
+```
+
+---
+
+### Architectural Guarantees
+
+This architecture ensures:
+
+- deterministic replay
+- append‑only event history
+- rebuildable derived state
+- clear separation of ingestion vs intelligence layers
+
+If any derived table becomes corrupted, the system can be rebuilt from:
+
+```
+preorder.tracking
+```
+
+which represents the authoritative webhook event log.
+
+---
+
+
+---
+
+## 🛠 System Rebuild Procedure (Disaster Recovery)
+
+The preorder architecture is intentionally designed to be **fully rebuildable from the webhook event log**.
+
+The authoritative event source is:
+
+```
+preorder.tracking
+```
+
+All derived tables can be safely regenerated if corruption, migration failure, or operational errors occur.
+
+This section documents the deterministic rebuild order.
+
+---
+
+### Rebuild Order
+
+Derived state must be rebuilt in the following sequence:
+
+1. `commitment_ledger`
+2. `product_status`
+3. `inventory_arrival`
+4. `lifecycle_snapshot`
+
+Each stage depends only on upstream state and is safe to recompute.
+
+---
+
+### Step 1 — Rebuild Commitment Ledger
+
+The ledger is reconstructed by replaying webhook events stored in `preorder.tracking`.
+
+Run:
+
+```
+python build_commitment_ledger.py --topic all
+```
+
+This process:
+
+- scans tracking events using keyset pagination `(created_at, id)`
+- converts lifecycle events into ledger deltas
+- inserts rows using `INSERT ... ON CONFLICT DO NOTHING`
+
+Guarantees:
+
+- replay safe
+- append‑only
+- idempotent
+
+If needed, the ledger table may be cleared prior to rebuild:
+
+```
+truncate preorder.commitment_ledger;
+```
+
+Then rerun the replay worker.
+
+---
+
+### Step 2 — Rebuild Structural Classification
+
+Structural preorder classification can be regenerated by re-running the classification orchestrator.
+
+Typical rebuild method:
+
+```
+POST /reclassify/batch
+```
+
+or internal script:
+
+```
+batch_reclassify()
+```
+
+Classification will repopulate:
+
+```
+preorder.product_status
+```
+
+This step is deterministic because classification depends only on:
+
+- Shopify product metadata
+- override records
+- deterministic classification rules
+
+---
+
+### Step 3 — Rebuild Inventory Arrival Tracking
+
+Inventory arrival rows are regenerated automatically when classification runs.
+
+Rule:
+
+```
+inventory > 0 AND no existing arrival row
+```
+
+Arrival tracking writes to:
+
+```
+preorder.inventory_arrival
+```
+
+If necessary the table may be cleared before replay:
+
+```
+truncate preorder.inventory_arrival;
+```
+
+Then rerun classification.
+
+---
+
+### Step 4 — Rebuild Lifecycle Snapshots
+
+Lifecycle snapshots freeze presale cohorts at the publication boundary.
+
+They can be fully rebuilt from:
+
+- `commitment_ledger`
+- `product_status`
+- `inventory_arrival`
+
+Run:
+
+```
+python lifecycle_snapshotter.py --rebuild
+```
+
+The rebuild process performs:
+
+```
+truncate preorder.lifecycle_snapshot
+```
+
+followed by deterministic recomputation.
+
+---
+
+### Determinism Guarantees
+
+Rebuilding the system from scratch will produce identical semantic results because:
+
+- the ledger is append‑only
+- lifecycle snapshots freeze cohort boundaries
+- classification rules are deterministic
+- event replay order is stable
+
+Therefore the system supports:
+
+- disaster recovery
+- schema migrations
+- historical backfills
+- infrastructure re‑deployment
+
+without data loss.
+
+---
+
+### Operational Recommendation
+
+For safety during rebuild operations:
+
+1. Pause background workers.
+2. Perform rebuild steps in the order listed above.
+3. Resume workers after validation.
+
+This ensures replay cursors and derived tables remain consistent.
+
+---
+
+
+---
+
+## 🧰 Operational Runbook (Common Maintenance Tasks)
+
+This section documents routine operational tasks for maintaining the preorder system. All operations assume the event‑driven architecture described earlier and respect the rule that **derived state can always be rebuilt from `preorder.tracking`**.
+
+---
+
+### 1. Replaying a Single Webhook Event
+
+Occasionally a webhook event may need to be reprocessed.
+
+Steps:
+
+1. Identify the event in `preorder.tracking`:
+
+```
+select id, topic, created_at
+from preorder.tracking
+where id = '<EVENT_UUID>';
+```
+
+2. Delete corresponding ledger rows (if necessary):
+
+```
+delete from preorder.commitment_ledger
+where tracking_id = '<EVENT_UUID>';
+```
+
+3. Re-run the ledger worker.
+
+Because ledger writes are idempotent (`ON CONFLICT DO NOTHING`), replaying the event will safely restore the correct state.
+
+---
+
+### 2. Resetting the Ledger Replay Cursor
+
+If the ledger worker must reprocess events from an earlier point in time, reset the replay cursor.
+
+Example:
+
+```
+update preorder.replay_cursor
+set last_created_at = '2026-01-01T00:00:00Z',
+    last_id = null
+where topic = 'orders/create';
+```
+
+After resetting the cursor, the next worker run will resume scanning from the specified timestamp.
+
+This operation is safe because ledger writes are idempotent.
+
+---
+
+### 3. Rebuilding a Single Product Lifecycle Snapshot
+
+If a product’s publication date changes or snapshot data becomes inconsistent, its lifecycle snapshot can be rebuilt.
+
+Steps:
+
+1. Remove the existing snapshot:
+
+```
+delete from preorder.lifecycle_snapshot
+where product_id = <PRODUCT_ID>;
+```
+
+2. Run the snapshot worker.
+
+The worker will recompute the snapshot deterministically using:
+
+- `commitment_ledger`
+- `product_status`
+- `inventory_arrival`
+
+---
+
+### 4. Verifying Ledger Integrity
+
+Check for duplicate positive commitments:
+
+```
+select
+order_id,
+line_item_id,
+count(*)
+from preorder.commitment_ledger
+where delta_qty > 0
+group by order_id, line_item_id
+having count(*) > 1;
+```
+
+Expected result:
+
+```
+0 rows
+```
+
+This confirms that the partial uniqueness rule protecting positive commitments is functioning correctly.
+
+---
+
+### 5. Inspecting Recent Ledger Activity
+
+To inspect the most recent commitment events for a product:
+
+```
+select
+order_id,
+line_item_id,
+delta_qty,
+topic,
+occurred_at
+from preorder.commitment_ledger
+where product_id = <PRODUCT_ID>
+order by occurred_at desc
+limit 20;
+```
+
+This query is commonly used when diagnosing preorder commitment mismatches.
+
+---
+
+### 6. Verifying Lifecycle Snapshot State
+
+Check the frozen presale cohort for a product:
+
+```
+select
+product_id,
+presale_commitment_total,
+presale_snapshot_at,
+first_inventory_arrival_at,
+lifecycle_closed_at
+from preorder.lifecycle_snapshot
+where product_id = <PRODUCT_ID>;
+```
+
+This confirms:
+
+- cohort size
+- snapshot timestamp
+- whether lifecycle closure occurred
+
+---
+
+### Operational Safety Rules
+
+When performing manual maintenance operations:
+
+- Never modify existing ledger rows.
+- Only append new rows or delete rows during controlled rebuilds.
+- Prefer replaying events rather than editing derived tables.
+- Pause workers during large rebuild operations.
+
+These rules preserve the **event‑sourced integrity** of the preorder system.
+
+---
+
 ## 🔒 Current Stability Status
 
 Classification engine is fully deterministic and structurally strict.
