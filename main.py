@@ -5,6 +5,7 @@ from routes.webhooks import router as webhooks_router
 from routes.approvals import router as approvals_router
 from routes.reclassify import router as reclassify_router
 from routes.admin_preorders import router as admin_preorders_router
+from routes.internal_events import router as internal_events_router
 
 
 app = FastAPI(title="preorder-service")
@@ -29,7 +30,10 @@ app.include_router(approvals_router)
 app.include_router(reclassify_router)
 
 # admin dashboard API
-app.include_router(admin_preorders_router, prefix="/admin/preorders", tags=["admin_preorders"])
+app.include_router(admin_preorders_router, prefix="/admin/preorders", tags=["admin_preorders"]) 
+
+# internal events API
+app.include_router(internal_events_router)
 
 @app.get("/healthz")
 def healthz(): return {"ok": True}
