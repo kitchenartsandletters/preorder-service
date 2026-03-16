@@ -24,6 +24,9 @@ class ProductMetadata:
     pub_date_raw: Optional[date]
     override_date_raw: Optional[date]
     inventory: int
+    title: Optional[str] = None
+    vendor: Optional[str] = None
+    isbn: Optional[str] = None
 
     def parsed_date_tags(self) -> List[date]:
         parsed = []

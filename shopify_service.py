@@ -14,12 +14,17 @@ PRODUCT_FULL_QUERY = """
 query ProductFull($id: ID!, $collectionsFirst: Int!, $variantsFirst: Int!, $metafieldsFirst: Int!) {
   product(id: $id) {
     id
+    title
+    vendor
     tags
     collections(first: $collectionsFirst) {
       nodes { handle }
     }
     variants(first: $variantsFirst) {
-      nodes { inventoryQuantity }
+      nodes {
+        inventoryQuantity
+        barcode
+      }
     }
     metafields(first: $metafieldsFirst, namespace: "custom") {
       nodes { key value }
@@ -27,6 +32,13 @@ query ProductFull($id: ID!, $collectionsFirst: Int!, $variantsFirst: Int!, $meta
   }
 }
 """
+
+def _extract_isbn(variant_nodes: List[Dict[str, Any]]) -> Optional[str]:
+    for v in variant_nodes or []:
+        barcode = v.get("barcode")
+        if barcode:
+            return str(barcode)
+    return None
 
 
 def _split_tags(tags_field: Any) -> List[str]:
@@ -230,14 +242,19 @@ async def build_product_metadata_from_shopify(
 
     print(product_id, collection_handles)
 
+    variant_nodes = product.get("variants", {}).get("nodes", [])
+
     return ProductMetadata(
         product_id=product_id,
+        title=product.get("title"),
+        vendor=product.get("vendor"),
+        isbn=_extract_isbn(variant_nodes),
+
         tags=_split_tags(product.get("tags")),
         in_preorder_collection=in_preorder_collection,
         override_date_raw=override_date_raw,
         pub_date_raw=pub_date_raw,
         date_tags_raw=_extract_date_tags_raw(_split_tags(product.get("tags"))),
-        inventory=_sum_inventory(
-            product.get("variants", {}).get("nodes", [])
-        )
+
+        inventory=_sum_inventory(variant_nodes)
     )

@@ -159,7 +159,19 @@ def classify_and_persist_product(
             return [_serialize_dates(v) for v in obj]
         return obj
 
-    serialized_snapshot = _serialize_dates(engine_input.__dict__)
+    metadata_snapshot = {
+        "product_id": product_metadata.product_id,
+        "title": product_metadata.title,
+        "vendor": product_metadata.vendor,
+        "isbn": product_metadata.isbn,
+        "tags": product_metadata.tags,
+        "pub_date": product_metadata.pub_date_raw,
+        "inventory": product_metadata.inventory,
+        "override_date": product_metadata.override_date_raw,
+        "in_preorder_collection": product_metadata.in_preorder_collection,
+    }
+
+    serialized_snapshot = _serialize_dates(metadata_snapshot)
 
     persist_classification(
         supabase=supabase,

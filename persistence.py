@@ -28,13 +28,28 @@ def persist_classification(
         else None
     )
 
+    # Normalize metadata snapshot structure if provided
+    snapshot = None
+    if metadata_snapshot:
+        snapshot = {
+            "product_id": product_id,
+            "title": metadata_snapshot.get("title"),
+            "vendor": metadata_snapshot.get("vendor"),
+            "isbn": metadata_snapshot.get("isbn"),
+            "tags": metadata_snapshot.get("tags"),
+            "pub_date": metadata_snapshot.get("pub_date"),
+            "inventory": metadata_snapshot.get("inventory"),
+            "override_date": metadata_snapshot.get("override_date"),
+            "in_preorder_collection": metadata_snapshot.get("in_preorder_collection"),
+        }
+
     payload = {
         "product_id": product_id,
         "status": classification.status,
         "anomaly_type": classification.anomaly_type,
         "effective_pub_date": effective_pub_date,
         "last_classified_at": datetime.now(UTC).isoformat(),
-        "metadata_snapshot": metadata_snapshot,
+        "metadata_snapshot": snapshot,
         "engine_version": engine_version,
     }
 
