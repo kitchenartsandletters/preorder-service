@@ -43,6 +43,36 @@ async def reclassify_batch(
         results=results,
     )
 
+@router.post("/active")
+async def reclassify_active_products(
+    _admin=Depends(require_admin_key),
+    supabase=Depends(get_supabase_client),
+    shopify_client=Depends(get_shopify_client),
+):
+
+    products = supabase.schema("preorder").table("product_status") \
+        .select("product_id") \
+        .neq("status", "not_a_preorder_product") \
+        .execute()
+
+    results = []
+
+    for row in products.data:
+        pid = row["product_id"]
+
+        result = await reclassify_single_product(
+            supabase=supabase,
+            shopify_client=shopify_client,
+            product_id=pid
+        )
+
+        results.append(result)
+
+    return {
+        "processed": len(results),
+        "results": results
+    }
+
 @router.post("/{product_id}")
 async def reclassify_product(
     product_id: int,
