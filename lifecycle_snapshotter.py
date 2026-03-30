@@ -39,6 +39,9 @@ from zoneinfo import ZoneInfo
 
 from db.connection import get_pool
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
@@ -95,8 +98,9 @@ async def fetch_snapshot_candidates(pool, limit: int = 5000) -> list[SnapshotCan
         left join preorder.lifecycle_snapshot ls
           on ls.product_id = cl.product_id
         where ps.effective_pub_date is not null
-          and ps.effective_pub_date <= $1::date
-          and ls.product_id is null
+        and ps.effective_pub_date <= $1::date
+        and ps.status in ('active_preorder', 'historical_preorder')
+        and ls.product_id is null
         order by ps.effective_pub_date asc
         limit $2
         """,
@@ -204,9 +208,13 @@ async def get_current_preorder_committed_qty(pool, product_id: int) -> int:
     """Phase 13 proxy: current net commitment across the ledger for this product."""
     row = await pool.fetchrow(
         """
-        select coalesce(sum(delta_qty), 0) as total
-        from preorder.commitment_ledger
-        where product_id = $1
+        select coalesce(sum(cl.delta_qty), 0) as total
+        from preorder.commitment_ledger cl
+        join preorder.product_status ps
+        on ps.product_id = cl.product_id
+        where cl.product_id = $1
+        and ps.status in ('active_preorder', 'historical_preorder')
+        and cl.topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
         """,
         product_id,
     )
@@ -294,6 +302,19 @@ async def run_daily(limit: int = 5000) -> dict:
     # 1) snapshot creation
     candidates = await fetch_snapshot_candidates(pool, limit=limit)
     for c in candidates:
+        # SAFETY GUARD: ensure product is still a preorder at snapshot time
+        status_row = await pool.fetchrow(
+            """
+            select status
+            from preorder.product_status
+            where product_id = $1
+            """,
+            c.product_id,
+        )
+
+        if not status_row or status_row["status"] not in ("active_preorder", "historical_preorder"):
+            continue
+
         presale_total = await compute_presale_commitment_total(
             pool, c.product_id, c.effective_pub_date
         )

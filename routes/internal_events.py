@@ -59,8 +59,7 @@ async def internal_event(
     # --- Dedupe guard ---
     now = time.time()
 
-    entity_id = payload.get("product_id") or payload.get("inventory_item_id")
-    dedupe_key = f"{event_type}:{entity_id}"
+    dedupe_key = event_id
 
     last_seen = RECENT_EVENTS.get(dedupe_key)
 
