@@ -284,12 +284,6 @@ def extract_ledger_rows(
     # so that only one positive commitment per (order_id, line_item_id) is stored.
     if topic in ("orders/create", "orders/paid"):
         for li in iter_order_line_items(payload):
-            is_backfill = False
-
-            # Detect backfill signal
-            if payload.get("source") == "backfill" or payload.get("is_backfill") is True:
-                is_backfill = True
-
             product_id = _as_int(li.get("product_id") or li.get("productId"))
             if product_id is None:
                 continue
@@ -302,7 +296,7 @@ def extract_ledger_rows(
             rows.append(LedgerRow(
                 tracking_id=tracking_id,
                 event_id=event_id,
-                topic="orders/create_backfill" if is_backfill else topic,
+                topic=topic,
                 product_id=product_id,
                 variant_id=variant_id,
                 order_id=order_id,
