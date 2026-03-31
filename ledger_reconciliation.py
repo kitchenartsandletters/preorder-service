@@ -133,7 +133,7 @@ async def get_pool() -> asyncpg.Pool:
     return await asyncpg.create_pool(dsn=dsn, ssl="require")
 
 
-async def fetch_snapshot_products(pool: asyncpg.Pool, limit: int = 500) -> List[Dict[str, Any]]:
+async def fetch_snapshot_products(pool: asyncpg.Pool, limit: int = 500, offset: int = 0) -> List[Dict[str, Any]]:
     rows = await pool.fetch(
         """
         select distinct cl.product_id, ps.effective_pub_date
@@ -142,8 +142,10 @@ async def fetch_snapshot_products(pool: asyncpg.Pool, limit: int = 500) -> List[
           on ps.product_id = cl.product_id
         where ps.status in ('active_preorder', 'historical_preorder')
         order by ps.effective_pub_date asc nulls last, cl.product_id asc
-        limit $1
+        offset $1
+        limit $2
         """,
+        offset,
         limit,
     )
     return [dict(r) for r in rows]
@@ -167,7 +169,7 @@ async def fetch_ledger_open_qty(pool: asyncpg.Pool, product_id: int) -> int:
     return max(total, 0)
 
 
-async def fetch_shopify_open_qty(shopify: ShopifyClient, product_id: int, max_pages: int = 5) -> int:
+async def fetch_shopify_open_qty(shopify: ShopifyClient, product_id: int, max_pages: int = 20) -> int:
     MAX_RETRIES_PER_PAGE = 3
 
     cursor = None
@@ -363,15 +365,23 @@ async def run(limit: int, dry_run: bool, product_id: Optional[int]) -> Dict[str,
         if product_id is not None:
             products = [{"product_id": product_id, "effective_pub_date": None}]
         else:
-            products = await fetch_snapshot_products(pool, limit=limit)
+            products = []
+            current_offset = 0
+
+            while True:
+                batch = await fetch_snapshot_products(pool, limit=limit, offset=current_offset)
+                if not batch:
+                    break
+                products.extend(batch)
+                current_offset += limit
 
         # deterministic chunking guard
         products = sorted(products, key=lambda x: (x.get("effective_pub_date") or date.min, x["product_id"]))
 
         results: List[ReconciliationRow] = []
 
-        BATCH_SIZE = 10
-        DELAY_BETWEEN_BATCHES = 2.0
+        BATCH_SIZE = 5
+        DELAY_BETWEEN_BATCHES = 1.0
 
         for i in range(0, len(products), BATCH_SIZE):
             batch = products[i:i + BATCH_SIZE]
