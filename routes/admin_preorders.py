@@ -76,3 +76,24 @@ def get_preorder_metrics(ok: bool = Depends(require_admin_token)):
         "release_queue_count": 0,
         "released_this_week": 0
     }
+
+@router.get("/live-metrics")
+def get_live_presale_metrics(ok: bool = Depends(require_admin_token)):
+    """
+    Returns presale metrics derived exclusively from verified Tier 1 data
+    (post-cutover live webhook events only).
+
+    data_confidence will always be 'verified' for rows in this response.
+    For estimated figures covering pre-cutover history, use /products
+    which surfaces both live_presale_qty and estimated_presale_qty with
+    explicit data_confidence labeling.
+    """
+    resp = (
+        supabase
+        .schema("preorder")
+        .from_("vw_live_presale_metrics")
+        .select("*")
+        .execute()
+    )
+
+    return resp.data or []
