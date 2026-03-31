@@ -18,7 +18,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-
 @dataclass(frozen=True)
 class ReconciliationRow:
     product_id: int
@@ -49,16 +48,32 @@ class ShopifyClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def graphql(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        resp = await self.client.post(
-            self.endpoint,
-            json={"query": query, "variables": variables or {}},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "errors" in data:
+    async def graphql(self, query: str, variables: dict | None = None):
+        MAX_RETRIES = 5
+
+        for attempt in range(MAX_RETRIES):
+            resp = await self.client.post(
+                self.endpoint,
+                json={"query": query, "variables": variables or {}},
+            )
+
+            data = resp.json()
+
+            # --- SUCCESS ---
+            if "errors" not in data:
+                return data["data"]
+
+            # --- THROTTLED ---
+            if any(e.get("extensions", {}).get("code") == "THROTTLED" for e in data["errors"]):
+                wait_time = min(2 ** attempt, 10)  # cap backoff
+                logger.warning(f"[THROTTLED] retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+
+            # --- OTHER ERROR ---
             raise ShopifyGraphQLError(data["errors"])
-        return data["data"]
+
+        raise Exception("Exceeded max Shopify retries")
 
 
 OPEN_ORDER_COMMITMENTS_QUERY = """
@@ -122,10 +137,11 @@ async def fetch_snapshot_products(pool: asyncpg.Pool, limit: int = 500) -> List[
     rows = await pool.fetch(
         """
         select
-          ls.product_id,
-          ls.effective_pub_date
-        from preorder.lifecycle_snapshot ls
-        order by ls.effective_pub_date desc nulls last
+          ps.product_id,
+          ps.effective_pub_date
+        from preorder.product_status ps
+        where ps.status in ('active_preorder', 'historical_preorder')
+        order by ps.effective_pub_date asc nulls last, ps.product_id asc
         limit $1
         """,
         limit,
@@ -143,7 +159,7 @@ async def fetch_ledger_open_qty(pool: asyncpg.Pool, product_id: int) -> int:
         where cl.product_id = $1
           and ps.status in ('active_preorder', 'historical_preorder')
           and cl.topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
-          and cl.topic != 'reconciliation.adjustment'
+          and cl.topic not in ('orders/create_backfill', 'reconciliation.adjustment')
         """,
         product_id,
     )
@@ -332,18 +348,29 @@ async def run(limit: int, dry_run: bool, product_id: Optional[int]) -> Dict[str,
         else:
             products = await fetch_snapshot_products(pool, limit=limit)
 
+        # deterministic chunking guard
+        products = sorted(products, key=lambda x: (x.get("effective_pub_date") or date.min, x["product_id"]))
+
         results: List[ReconciliationRow] = []
 
-        for p in products:
-            await asyncio.sleep(0.05)  # throttle to avoid Shopify burst issues
-            row = await reconcile_product(
-                pool,
-                shopify,
-                product_id=int(p["product_id"]),
-                effective_pub_date=p.get("effective_pub_date"),
-                dry_run=dry_run,
-            )
-            results.append(row)
+        BATCH_SIZE = 10
+        DELAY_BETWEEN_BATCHES = 2.0
+
+        for i in range(0, len(products), BATCH_SIZE):
+            batch = products[i:i + BATCH_SIZE]
+
+            for p in batch:
+                row = await reconcile_product(
+                    pool,
+                    shopify,
+                    product_id=int(p["product_id"]),
+                    effective_pub_date=p.get("effective_pub_date"),
+                    dry_run=dry_run,
+                )
+                results.append(row)
+
+            # throttle between batches
+            await asyncio.sleep(DELAY_BETWEEN_BATCHES)
 
         mismatches = [r for r in results if r.delta != 0]
 
@@ -363,7 +390,8 @@ async def run(limit: int, dry_run: bool, product_id: Optional[int]) -> Dict[str,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--product-id", type=int, default=None)
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()

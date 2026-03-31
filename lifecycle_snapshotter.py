@@ -119,6 +119,7 @@ async def compute_presale_commitment_total(pool, product_id: int, eff_pub_date: 
         from preorder.commitment_ledger
         where product_id = $1
           and occurred_at < $2
+          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
         """,
         product_id,
         cutoff_utc,
@@ -205,16 +206,13 @@ async def get_first_positive_inventory_at(pool, product_id: int) -> datetime | N
 
 
 async def get_current_preorder_committed_qty(pool, product_id: int) -> int:
-    """Phase 13 proxy: current net commitment across the ledger for this product."""
+    """Current net commitment using ONLY clean ledger topics (post-reconciliation)."""
     row = await pool.fetchrow(
         """
-        select coalesce(sum(cl.delta_qty), 0) as total
-        from preorder.commitment_ledger cl
-        join preorder.product_status ps
-        on ps.product_id = cl.product_id
-        where cl.product_id = $1
-        and ps.status in ('active_preorder', 'historical_preorder')
-        and cl.topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
+        select coalesce(sum(delta_qty), 0) as total
+        from preorder.commitment_ledger
+        where product_id = $1
+        and topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
         """,
         product_id,
     )

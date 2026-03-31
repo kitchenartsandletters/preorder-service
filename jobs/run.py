@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # Internal job imports
 from build_commitment_ledger import run as run_commitment_ledger
 from lifecycle_snapshotter import run_daily as run_lifecycle_snapshotter
+from ledger_reconciliation import run as run_ledger_reconciliation
 
 UTC = timezone.utc
 
@@ -56,12 +57,23 @@ async def run_lifecycle_job(args) -> Dict[str, Any]:
     return summary
 
 
+async def run_reconciliation_job(args) -> Dict[str, Any]:
+    summary = await run_ledger_reconciliation(
+        limit=args.limit,
+        write=not args.dry_run,
+    )
+    return summary
+
+
 async def dispatch(args) -> Dict[str, Any]:
     if args.job == "commitment_ledger":
         return await run_commitment_job(args)
 
     if args.job == "lifecycle_snapshotter":
         return await run_lifecycle_job(args)
+
+    if args.job == "ledger_reconciliation":
+        return await run_reconciliation_job(args)
 
     raise ValueError(f"Unknown job: {args.job}")
 
@@ -72,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--job",
         required=True,
-        choices=["commitment_ledger", "lifecycle_snapshotter"],
+        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation"],
         help="Job to run",
     )
 
@@ -98,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Do not write inserts (commitment_ledger only)",
+        help="Do not write inserts (commitment_ledger / reconciliation)",
     )
 
     return parser
