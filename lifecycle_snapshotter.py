@@ -119,7 +119,7 @@ async def compute_presale_commitment_total(pool, product_id: int, eff_pub_date: 
         from preorder.commitment_ledger
         where product_id = $1
           and occurred_at < $2
-          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create', 'reconciliation/adjustment')
+          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create', 'reconciliation.adjustment')
         """,
         product_id,
         cutoff_utc,
