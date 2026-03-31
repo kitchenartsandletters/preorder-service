@@ -136,12 +136,12 @@ async def get_pool() -> asyncpg.Pool:
 async def fetch_snapshot_products(pool: asyncpg.Pool, limit: int = 500) -> List[Dict[str, Any]]:
     rows = await pool.fetch(
         """
-        select
-          ps.product_id,
-          ps.effective_pub_date
-        from preorder.product_status ps
+        select distinct cl.product_id, ps.effective_pub_date
+        from preorder.commitment_ledger cl
+        join preorder.product_status ps
+          on ps.product_id = cl.product_id
         where ps.status in ('active_preorder', 'historical_preorder')
-        order by ps.effective_pub_date asc nulls last, ps.product_id asc
+        order by ps.effective_pub_date asc nulls last, cl.product_id asc
         limit $1
         """,
         limit,

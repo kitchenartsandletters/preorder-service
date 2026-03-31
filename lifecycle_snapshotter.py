@@ -119,7 +119,7 @@ async def compute_presale_commitment_total(pool, product_id: int, eff_pub_date: 
         from preorder.commitment_ledger
         where product_id = $1
           and occurred_at < $2
-          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
+          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create', 'reconciliation/adjustment')
         """,
         product_id,
         cutoff_utc,
@@ -209,10 +209,22 @@ async def get_current_preorder_committed_qty(pool, product_id: int) -> int:
     """Current net commitment using ONLY clean ledger topics (post-reconciliation)."""
     row = await pool.fetchrow(
         """
-        select coalesce(sum(delta_qty), 0) as total
+        select coalesce(
+        sum(
+            case
+            when topic in (
+                'orders/create',
+                'orders/fulfilled',
+                'refunds/create',
+                'reconciliation.adjustment'
+            )
+            then delta_qty
+            else 0
+            end
+        ), 0
+        ) as total
         from preorder.commitment_ledger
         where product_id = $1
-        and topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
         """,
         product_id,
     )
