@@ -323,18 +323,48 @@ async def reconcile_product(
     dry_run: bool,
 ) -> ReconciliationRow:
     ledger_open_qty = await fetch_ledger_open_qty(pool, product_id)
-    shopify_open_qty = await fetch_shopify_open_qty(shopify, product_id)
+
+    # --- Fetch lifecycle status ---
+    status_row = await pool.fetchrow(
+        """
+        select status
+        from preorder.product_status
+        where product_id = $1
+        """,
+        product_id,
+    )
+    status = status_row["status"] if status_row else None
+
+    # --- Lifecycle-aware Shopify open qty ---
+    if status == "historical_preorder":
+        shopify_open_qty = 0
+    else:
+        shopify_open_qty = await fetch_shopify_open_qty(shopify, product_id)
+
     delta = shopify_open_qty - ledger_open_qty
+
+    # --- Idempotency guard ---
+    existing_adjustment = await pool.fetchval(
+        """
+        select coalesce(sum(delta_qty), 0)
+        from preorder.commitment_ledger
+        where product_id = $1
+        and topic = 'reconciliation.adjustment'
+        """,
+        product_id,
+    )
+
+    needed_adjustment = delta - (existing_adjustment or 0)
 
     action = "noop"
     note = None
 
-    if delta != 0:
+    if needed_adjustment != 0:
         action = "would_adjust" if dry_run else "adjusted"
         note = "positive delta means missing create-like qty; negative delta means missing fulfillment/refund-like qty"
 
         if not dry_run:
-            await insert_adjustment(pool, product_id=product_id, delta=delta)
+            await insert_adjustment(pool, product_id=product_id, delta=needed_adjustment)
 
     await insert_reconciliation_log(
         pool,
@@ -357,7 +387,8 @@ async def reconcile_product(
     )
 
 
-async def run(limit: int, dry_run: bool, product_id: Optional[int]) -> Dict[str, Any]:
+async def run(limit: int, write: bool, product_id: Optional[int]) -> Dict[str, Any]:
+    dry_run = not write
     pool = await get_pool()
     shopify = ShopifyClient()
 
@@ -428,7 +459,7 @@ def main() -> None:
     summary = asyncio.run(
         run(
             limit=args.limit,
-            dry_run=not args.write,
+            write=args.write,
             product_id=args.product_id,
         )
     )
