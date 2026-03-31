@@ -38,7 +38,7 @@ class ShopifyClient:
         self.api_version = os.environ.get("API_VERSION", "2025-10")
         self.endpoint = f"https://{self.shop_url}/admin/api/{self.api_version}/graphql.json"
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=httpx.Timeout(120.0, connect=20.0),
             headers={
                 "X-Shopify-Access-Token": self.access_token,
                 "Content-Type": "application/json",
@@ -167,16 +167,30 @@ async def fetch_ledger_open_qty(pool: asyncpg.Pool, product_id: int) -> int:
     return max(total, 0)
 
 
-async def fetch_shopify_open_qty(shopify: ShopifyClient, product_id: int, max_pages: int = 20) -> int:
+async def fetch_shopify_open_qty(shopify: ShopifyClient, product_id: int, max_pages: int = 5) -> int:
+    MAX_RETRIES_PER_PAGE = 3
+
     cursor = None
     pages = 0
     total_open = 0
 
     while True:
-        data = await shopify.graphql(
-            OPEN_ORDER_COMMITMENTS_QUERY,
-            {"cursor": cursor, "query": f"line_items.product_id:{product_id} status:open"}
-        )
+        attempt = 0
+        while True:
+            try:
+                data = await shopify.graphql(
+                    OPEN_ORDER_COMMITMENTS_QUERY,
+                    {"cursor": cursor, "query": f"line_items.product_id:{product_id} status:open"}
+                )
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt >= MAX_RETRIES_PER_PAGE:
+                    logger.error("Shopify fetch failed after retries", extra={"product_id": product_id})
+                    return total_open  # fail soft, keep partial
+                wait_time = min(2 ** attempt, 10)
+                logger.warning(f"[RETRY] product_id={product_id} retrying in {wait_time}s due to {e}")
+                await asyncio.sleep(wait_time)
 
         orders = data["orders"]
         for edge in orders["edges"]:
@@ -204,7 +218,10 @@ async def fetch_shopify_open_qty(shopify: ShopifyClient, product_id: int, max_pa
         cursor = orders["pageInfo"]["endCursor"]
         pages += 1
         if pages >= max_pages:
-            logger.warning("Reached max_pages while fetching Shopify commitments", extra={"product_id": product_id})
+            logger.warning(
+                "Reached max_pages while fetching Shopify commitments",
+                extra={"product_id": product_id, "partial_total_open": total_open},
+            )
             break
 
     return total_open
