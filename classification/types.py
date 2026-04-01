@@ -13,6 +13,7 @@ class ClassificationInput:
     pub_date: Optional[date]
     override_date: Optional[date]
     inventory: int
+    has_inventory_arrival: bool = False   # New field to indicate if there's an inventory arrival event for this product
 
 
 @dataclass

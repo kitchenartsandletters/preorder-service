@@ -21,11 +21,8 @@ def make_input(
     pub_date=None,
     override_date=None,
     inventory=0,
+    has_inventory_arrival=False,   # ← add
 ):
-    """
-    Factory for ClassificationInput objects (placeholder).
-    This will become the central helper for test data.
-    """
     return ClassificationInput(
         product_id=product_id,
         tags=tags or [],
@@ -34,4 +31,5 @@ def make_input(
         pub_date=pub_date,
         override_date=override_date,
         inventory=inventory,
+        has_inventory_arrival=has_inventory_arrival,  # ← add
     )

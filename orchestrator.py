@@ -51,6 +51,17 @@ def classify_and_persist_product(
             return date.fromisoformat(raw)
         return None
 
+    arrival_response = (
+    supabase
+    .schema("preorder")
+    .table("inventory_arrival")
+    .select("product_id")
+    .eq("product_id", product_metadata.product_id)
+    .limit(1)
+    .execute()
+)
+    has_inventory_arrival = bool(arrival_response.data)
+
     engine_input = ClassificationInput(
         product_id=product_metadata.product_id,
         tags=product_metadata.tags,
@@ -63,6 +74,7 @@ def classify_and_persist_product(
             else product_metadata.override_date_raw
         ),
         inventory=product_metadata.inventory,
+        has_inventory_arrival=has_inventory_arrival,
     )
 
     result = classify_preorder_product(engine_input)

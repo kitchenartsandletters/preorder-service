@@ -155,3 +155,37 @@ def test_not_not_a_preorder_product_for_valid_early_stock():
     )
     result = classify_preorder_product(product)
     assert result.status != "not_a_preorder_product"
+
+def test_early_stock_arrival_via_pdp_cleanup_path():
+    """
+    Tag present, collection removed by PDP cleanup cron after inventory arrived.
+    has_inventory_arrival=True is the signal. Should classify as early_stock_arrival.
+    """
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=FUTURE_DATE,
+        inventory=5,
+        has_inventory_arrival=True,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "early_stock_arrival"
+    assert result.anomaly_type is None
+
+
+def test_early_stock_arrival_pdp_cleanup_zero_current_inventory():
+    """
+    Inventory may have sold down to zero after arrival, but arrival record exists.
+    Should still classify as early_stock_arrival based on arrival record.
+    Current inventory=0 does not negate a confirmed arrival.
+    """
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=FUTURE_DATE,
+        inventory=0,
+        has_inventory_arrival=True,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "early_stock_arrival"
+    assert result.anomaly_type is None

@@ -132,7 +132,7 @@ def _detect_anomaly(
 
 
 def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: date | None) -> bool:
-    # Standard path: structurally preorder (tag + collection) with inventory
+    # Standard path: tag + collection + future date + inventory
     standard = (
         _is_structurally_preorder(product)
         and effective_pub_date is not None
@@ -140,10 +140,9 @@ def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: da
         and product.inventory > 0
     )
 
-    # Early stock path: tag present, collection removed after inventory arrived,
-    # PDP cleanup cron intentionally removes collection membership.
-    # Inventory arrival record is the signal that removal was intentional.
-    early_stock_no_collection = (
+    # PDP cleanup path: tag present, collection removed after inventory arrived.
+    # inventory_arrival record is the authoritative signal that removal was intentional.
+    pdp_cleanup = (
         _has_preorder_tag(product)
         and not _is_in_preorder_collection(product)
         and effective_pub_date is not None
@@ -151,7 +150,7 @@ def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: da
         and product.has_inventory_arrival
     )
 
-    return standard or early_stock_no_collection
+    return standard or pdp_cleanup
 
 
 def _is_active_preorder(product: ClassificationInput, effective_pub_date: date | None) -> bool:

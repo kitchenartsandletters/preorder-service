@@ -108,3 +108,35 @@ def test_missing_collection_overrides_early_stock_arrival():
     )
     result = classify_preorder_product(product)
     _assert_missing_collection(result)
+
+def test_missing_collection_with_inventory_arrival_is_not_anomaly():
+    """
+    Tag present, collection=False, future pub date, but inventory has arrived.
+    PDP cleanup cron intentionally removed collection. Should NOT fire anomaly.
+    """
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=FUTURE_DATE,
+        inventory=5,
+        has_inventory_arrival=True,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "anomaly_missing_collection"
+    assert result.status == "early_stock_arrival"
+
+
+def test_missing_collection_without_inventory_arrival_still_fires():
+    """
+    Tag present, collection=False, future pub date, no inventory arrival.
+    This is a genuine anomaly — product was never received.
+    """
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=FUTURE_DATE,
+        inventory=0,
+        has_inventory_arrival=False,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "anomaly_missing_collection"
