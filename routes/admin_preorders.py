@@ -56,6 +56,7 @@ def get_preorder_products(ok: bool = Depends(require_admin_token)):
         .schema("preorder")
         .from_("vw_preorder_products")
         .select("*")
+        .not_.eq("classification", "not_a_preorder_product")
         .execute()
     )
 
@@ -69,6 +70,7 @@ def get_release_queue(ok: bool = Depends(require_admin_token)):
         .schema("preorder")
         .from_("vw_preorder_release_queue")
         .select("*")
+        .not_.eq("classification", "not_a_preorder_product")
         .execute()
     )
 
