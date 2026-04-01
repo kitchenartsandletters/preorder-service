@@ -59,12 +59,13 @@ def _detect_anomaly(
             effective_pub_date=effective_pub_date,
         )
 
-    # Phase 2.2: anomaly_missing_collection
+    # New rule (inventory arrival exemption):
     if (
         _has_preorder_tag(product)
         and not _is_in_preorder_collection(product)
         and effective_pub_date is not None
         and effective_pub_date > date.today()
+        and not product.has_inventory_arrival   # ← new field on ClassificationInput
     ):
         return ClassificationResult(
             status="anomaly_missing_collection",
@@ -131,12 +132,26 @@ def _detect_anomaly(
 
 
 def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: date | None) -> bool:
-    return (
+    # Standard path: structurally preorder (tag + collection) with inventory
+    standard = (
         _is_structurally_preorder(product)
         and effective_pub_date is not None
         and effective_pub_date > date.today()
         and product.inventory > 0
     )
+
+    # Early stock path: tag present, collection removed after inventory arrived,
+    # PDP cleanup cron intentionally removes collection membership.
+    # Inventory arrival record is the signal that removal was intentional.
+    early_stock_no_collection = (
+        _has_preorder_tag(product)
+        and not _is_in_preorder_collection(product)
+        and effective_pub_date is not None
+        and effective_pub_date > date.today()
+        and product.has_inventory_arrival
+    )
+
+    return standard or early_stock_no_collection
 
 
 def _is_active_preorder(product: ClassificationInput, effective_pub_date: date | None) -> bool:
