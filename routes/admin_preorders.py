@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi.responses import StreamingResponse
 from supabase import create_client, Client
+from pydantic import BaseModel
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -24,6 +25,10 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 ADMIN_TOKEN = os.getenv("PREORDER_ADMIN_TOKEN")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+class MarkReportedRequest(BaseModel):
+    product_ids: list[int]
+    week_anchor: str  # any ISO date inside the reporting week
 
 def resolve_week_bounds(week_anchor: str | None = None) -> tuple[date, date]:
     if week_anchor:
@@ -246,6 +251,68 @@ def generate_report_preview(
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+@router.post("/mark-reported")
+def mark_reported(
+    payload: MarkReportedRequest,
+    ok: bool = Depends(require_admin_token)
+):
+    """
+    Manually marks selected titles as reported for a given reporting week.
+    Writes release_state rows with released_to_reporting = true.
+    Idempotent — safe to call multiple times for the same product/week.
+    """
+    week_start, week_end = resolve_week_bounds(payload.week_anchor)
+
+    if not payload.product_ids:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="product_ids required")
+
+    # Fetch pub dates for the selected products
+    pub_date_resp = (
+        supabase
+        .schema("preorder")
+        .from_("product_status")
+        .select("product_id, effective_pub_date")
+        .in_("product_id", payload.product_ids)
+        .execute()
+    )
+
+    pub_date_map = {
+        row["product_id"]: row["effective_pub_date"]
+        for row in pub_date_resp.data or []
+    }
+
+    now_utc = datetime.utcnow().isoformat() + "Z"
+
+    rows = []
+    for pid in payload.product_ids:
+        pub_date = pub_date_map.get(pid)
+        if not pub_date:
+            continue
+        rows.append({
+            "product_id": pid,
+            "effective_pub_date": pub_date,
+            "released_to_reporting": True,
+            "release_report_week_start": str(week_start),
+            "release_report_week_end": str(week_end),
+            "released_at": now_utc,
+            "engine_version": "admin-dashboard-manual",
+            "csv_filename": None,
+            "updated_at": now_utc,
+        })
+
+    if rows:
+        supabase.schema("preorder").table("release_state").upsert(
+            rows,
+            on_conflict="product_id,effective_pub_date"
+        ).execute()
+
+    return {
+        "marked": len(rows),
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "product_ids": payload.product_ids,
+    }
 
 def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int]:
     """
