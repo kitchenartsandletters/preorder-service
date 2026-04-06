@@ -267,7 +267,7 @@ def generate_report_preview(
 
     # Add this temporary debug block in generate_report_preview
     # after fetching shopify_sales and before building rows:
-    print(f"[DEBUG] shopify_sales count: {len(shopify_sales)}")
+    print(f"[DEBUG] shopify_sales count qty: {len(shopify_sales)}")
     print(f"[DEBUG] presale_map pids: {list(presale_map.keys())}")
     print(f"[DEBUG] non_preorder_pids count: {len(non_preorder_pids)}")
     print(f"[DEBUG] isbn_map after meta fetch: {len(isbn_map)} entries")
