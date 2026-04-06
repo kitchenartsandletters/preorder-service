@@ -407,8 +407,8 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int
     UTC = timezone.utc
     week_start_et = datetime.combine(week_start, datetime.min.time(), tzinfo=ET)
     week_end_et = datetime.combine(week_end + timedelta(days=1), datetime.min.time(), tzinfo=ET)
-    start_utc = week_start_et.astimezone(UTC).isoformat()
-    end_utc = week_end_et.astimezone(UTC).isoformat()
+    start_utc = week_start_et.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_utc = week_end_et.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     query = """
     query Orders($cursor: String, $query: String!) {
