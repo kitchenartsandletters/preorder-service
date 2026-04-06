@@ -265,6 +265,14 @@ def generate_report_preview(
             snapshot = row.get("metadata_snapshot") or {}
             isbn_map[pid] = (snapshot.get("isbn") or "").strip()
 
+    # Add this temporary debug block in generate_report_preview
+    # after fetching shopify_sales and before building rows:
+    print(f"[DEBUG] shopify_sales count: {len(shopify_sales)}")
+    print(f"[DEBUG] presale_map pids: {list(presale_map.keys())}")
+    print(f"[DEBUG] non_preorder_pids count: {len(non_preorder_pids)}")
+    print(f"[DEBUG] isbn_map after meta fetch: {len(isbn_map)} entries")
+    print(f"[DEBUG] exclude_ids count: {len(exclude_ids)}")
+
     # --- Step 5: Build combined report rows ---
     # Union of selected preorder IDs and all products in weekly Shopify sales
     all_pids = set(product_ids) | set(shopify_sales.keys())
