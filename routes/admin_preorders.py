@@ -169,27 +169,44 @@ def generate_report_preview(
 ):
     """
     Dry-run report generation. No state is written.
-    Combines banked presales for selected product_ids with
-    live Shopify in-week sales for the target reporting week.
+
+    For selected preorder product_ids:
+        qty = bounded presale qty + post-pub in-week Shopify sales
+
+    For all other products that sold this week:
+        qty = in-week Shopify sales only
+
+    Active/future preorders are excluded from the weekly sales pass
+    so they never leak into the report before their pub date.
+
+    Operator qty overrides (qty_overrides) replace the system presale
+    qty for the specified product_ids before combining with week sales.
 
     Body:
       {
-        "product_ids": [123, 456],   # product_ids operator selected
-        "week_anchor": "2026-03-31"  # any date inside target week
+        "product_ids": [123, 456],
+        "week_anchor": "2026-03-31",
+        "qty_overrides": {"123": 19}   # optional, keyed by product_id string
       }
 
-    Returns CSV as a streaming download: ISBN,QTY
+    Returns CSV: ISBN,QTY sorted by ISBN.
     """
     product_ids: list[int] = payload.get("product_ids", [])
     week_anchor: str | None = payload.get("week_anchor")
+    raw_overrides: dict = payload.get("qty_overrides") or {}
 
     if not product_ids:
         from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="product_ids required")
 
+    # Normalize override keys to int
+    qty_overrides: dict[int, int] = {
+        int(k): int(v) for k, v in raw_overrides.items()
+    }
+
     week_start, week_end = resolve_week_bounds(week_anchor)
 
-    # --- Presale quantities for selected products ---
+    # --- Step 1: Bounded presale qtys for selected preorder titles ---
     presales_resp = (
         supabase
         .schema("preorder")
@@ -198,26 +215,77 @@ def generate_report_preview(
         .in_("product_id", product_ids)
         .execute()
     )
+    presale_map: dict[int, dict] = {
+        int(row["product_id"]): row
+        for row in presales_resp.data or []
+    }
 
-    presale_map: dict[int, dict] = {}
-    for row in presales_resp.data or []:
-        presale_map[int(row["product_id"])] = row
-
-    # --- In-week Shopify sales ---
+    # --- Step 2: All in-week Shopify sales (full store, all products) ---
     shopify_sales = _fetch_shopify_week_sales(week_start, week_end)
 
-    # --- Combine and build CSV rows ---
+    # --- Step 3: Active/future preorder IDs to exclude from weekly sales ---
+    # These titles have not yet published — they must not appear as
+    # regular weekly sales even if Shopify recorded orders this week.
+    active_resp = (
+        supabase
+        .schema("preorder")
+        .from_("product_status")
+        .select("product_id, effective_pub_date")
+        .in_("status", ["active_preorder", "early_stock_arrival"])
+        .execute()
+    )
+    exclude_ids: set[int] = set()
+    for row in active_resp.data or []:
+        pub = row.get("effective_pub_date")
+        if pub and pub > str(week_end):
+            exclude_ids.add(int(row["product_id"]))
+
+    # --- Step 4: ISBNs for non-preorder products that sold this week ---
+    # presale_map already has ISBNs for preorder titles.
+    # For everything else, look up ISBN from product_status metadata.
+    isbn_map: dict[int, str] = {
+        pid: (row.get("isbn") or "").strip()
+        for pid, row in presale_map.items()
+    }
+    non_preorder_pids = [
+        pid for pid in shopify_sales
+        if pid not in isbn_map
+    ]
+    if non_preorder_pids:
+        meta_resp = (
+            supabase
+            .schema("preorder")
+            .from_("product_status")
+            .select("product_id, metadata_snapshot")
+            .in_("product_id", non_preorder_pids)
+            .execute()
+        )
+        for row in meta_resp.data or []:
+            pid = int(row["product_id"])
+            snapshot = row.get("metadata_snapshot") or {}
+            isbn_map[pid] = (snapshot.get("isbn") or "").strip()
+
+    # --- Step 5: Build combined report rows ---
+    # Union of selected preorder IDs and all products in weekly Shopify sales
+    all_pids = set(product_ids) | set(shopify_sales.keys())
+
     rows: list[dict] = []
-    for pid in product_ids:
-        meta = presale_map.get(pid)
-        if not meta:
+    for pid in all_pids:
+        # Exclude future preorders from the weekly sales pass.
+        # Selected preorder IDs are always included regardless.
+        if pid in exclude_ids and pid not in product_ids:
             continue
 
-        isbn = (meta.get("isbn") or "").strip()
+        isbn = isbn_map.get(pid, "")
         if len(isbn) != 13 or not (isbn.startswith("978") or isbn.startswith("979")):
             continue
 
-        presale_qty = int(meta.get("total_presale_qty") or 0)
+        # Apply operator override if present, otherwise use system presale qty
+        if pid in qty_overrides:
+            presale_qty = qty_overrides[pid]
+        else:
+            presale_qty = int((presale_map.get(pid) or {}).get("total_presale_qty") or 0)
+
         week_qty = int(shopify_sales.get(pid, 0))
         total = presale_qty + week_qty
 
@@ -227,15 +295,13 @@ def generate_report_preview(
         rows.append({
             "isbn": isbn,
             "qty": total,
-            "title": meta.get("title", ""),
             "presale_qty": presale_qty,
             "week_qty": week_qty,
-            "data_confidence": meta.get("data_confidence", "estimated"),
         })
 
     rows.sort(key=lambda r: r["isbn"])
 
-    # --- Stream CSV ---
+    # --- Step 6: Stream CSV ---
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["ISBN", "QTY"])
