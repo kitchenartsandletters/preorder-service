@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 
 # Virtual Environments
 venv/
@@ -36,6 +37,7 @@ wheels/
 htmlcov/
 .tox/
 .nox/
+tests/
 .coverage
 .coverage.*
 .cache
