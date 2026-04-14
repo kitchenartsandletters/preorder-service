@@ -148,6 +148,7 @@ def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: da
         and effective_pub_date is not None
         and effective_pub_date > date.today()
         and product.has_inventory_arrival
+        and product.inventory >= 0 
     )
 
     return standard or pdp_cleanup

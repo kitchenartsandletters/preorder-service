@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build_commitment_ledger import run as run_commitment_ledger
 from lifecycle_snapshotter import run_daily as run_lifecycle_snapshotter
 from ledger_reconciliation import run as run_ledger_reconciliation
+from jobs.pub_date_transition import run as run_pub_date_transition
 
 UTC = timezone.utc
 
@@ -64,6 +65,12 @@ async def run_reconciliation_job(args) -> Dict[str, Any]:
     )
     return summary
 
+async def run_pub_date_transition_job(args) -> Dict[str, Any]:
+    return await run_pub_date_transition(
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
+
 
 async def dispatch(args) -> Dict[str, Any]:
     if args.job == "commitment_ledger":
@@ -74,6 +81,9 @@ async def dispatch(args) -> Dict[str, Any]:
 
     if args.job == "ledger_reconciliation":
         return await run_reconciliation_job(args)
+    
+    if args.job == "pub_date_transition":
+        return await run_pub_date_transition_job(args)
 
     raise ValueError(f"Unknown job: {args.job}")
 
@@ -84,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--job",
         required=True,
-        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation"],
+        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition"],
         help="Job to run",
     )
 
