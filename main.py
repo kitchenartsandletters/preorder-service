@@ -37,7 +37,7 @@ app.include_router(admin_preorders_router, prefix="/admin/preorders", tags=["adm
 app.include_router(internal_events_router)
 
 # admin cleanup API
-app.include_router(admin_cleanup_router, prefix="/admin/cleanup", tags=["admin_cleanup"])
+app.include_router(admin_cleanup_router, prefix="/admin/preorders", tags=["admin_cleanup"])
 
 @app.get("/healthz")
 def healthz(): return {"ok": True}
