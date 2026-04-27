@@ -34,6 +34,7 @@ CATCH_ALL_PUBLICATION_GID = "gid://shopify/Publication/103510278277"
 # ──────────────────────────────────────────────
 
 PREAMBLE_MARKER = "this is a featured preorder"
+PREAMBLE_MARKER_ALT = "this is a *featured preorder"
 
 FOOTER_MARKER = "featured preorder books earn you an"
 
@@ -81,7 +82,7 @@ def analyze_description(description_html: str) -> DescriptionAnalysis:
         )
 
     lower = description_html.lower()
-    has_preamble = PREAMBLE_MARKER in lower
+    has_preamble = PREAMBLE_MARKER in lower or PREAMBLE_MARKER_ALT in lower
     has_footer = FOOTER_MARKER in lower
 
     cleaned = _clean_description(description_html) if (has_preamble or has_footer) else description_html
@@ -118,7 +119,10 @@ def _clean_description(html: str) -> str:
     # Remove preamble paragraphs (preorder line + optional signing announcement)
     # Strategy: find the preamble marker, then remove paragraphs forward
     # until we hit either the publisher intro or non-preamble content.
-    preamble_idx = cleaned.lower().find(PREAMBLE_MARKER)
+    lower_cleaned = cleaned.lower()
+    preamble_idx = lower_cleaned.find(PREAMBLE_MARKER)
+    if preamble_idx == -1:
+        preamble_idx = lower_cleaned.find(PREAMBLE_MARKER_ALT)
     if preamble_idx != -1:
         publisher_marker = "this is what the publisher tells us about this book:"
         publisher_idx = cleaned.lower().find(publisher_marker)
