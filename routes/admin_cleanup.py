@@ -92,6 +92,7 @@ def log_cleanup_action(
         }).execute()
     except Exception as e:
         logger.error(f"Failed to log cleanup action: {e}")
+        print(f"❌ Cleanup log insert failed: {e}")
 
 
 # ──────────────────────────────────────────────
