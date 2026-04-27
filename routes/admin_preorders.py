@@ -388,6 +388,25 @@ def mark_reported(
         "product_ids": payload.product_ids,
     }
 
+@router.get("/late-arrivals")
+def get_late_arrivals(ok: bool = Depends(require_admin_token)):
+    """
+    Returns historical preorder titles with verified late inventory arrival
+    and open lifecycle snapshots.
+    """
+    resp = (
+        supabase
+        .schema("preorder")
+        .from_("vw_preorder_products")
+        .select("product_id, title, isbn, pub_date, arrival_timing, first_positive_inventory_at, arrival_record_is_live, lifecycle_closed")
+        .eq("classification", "historical_preorder")
+        .eq("arrival_timing", "late_arrival")
+        .eq("arrival_record_is_live", True)
+        .eq("lifecycle_closed", False)
+        .execute()
+    )
+    return resp.data or []
+
 def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int]:
     """
     Pull net weekly sales from Shopify for the reporting window.

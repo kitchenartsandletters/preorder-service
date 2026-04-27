@@ -51,6 +51,21 @@ def _detect_anomaly(
     IMPORTANT: Ordering is part of the canonical contract — do not reorder.
     """
 
+    # Phase 2.0: anomaly_stale_collection
+    # A product whose pub date has passed but is still in the Preorder collection.
+    # The preorder tag is intentionally retained on historical titles as a marker,
+    # so tag presence alone is not the signal — collection membership is.
+    # This requires human intervention to remove the product from the collection.
+    if (
+        _is_in_preorder_collection(product)
+        and effective_pub_date is not None
+        and effective_pub_date < date.today()
+    ):
+        return ClassificationResult(
+            status="anomaly_stale_collection",
+            anomaly_type="anomaly_stale_collection",
+        )
+
     # Phase 2.1: anomaly_missing_tag
     if _is_in_preorder_collection(product) and not _has_preorder_tag(product):
         return ClassificationResult(
@@ -229,6 +244,7 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
         • anomaly_override_conflict
         • anomaly_multi_date_conflict
         • anomaly_inventory_contradiction
+        • anomaly_stale_collection  — pub date passed, still in Preorder collection
 
        Rules must directly reflect Section 4 of the spec.
 
