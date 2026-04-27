@@ -35,7 +35,7 @@ CATCH_ALL_PUBLICATION_GID = "gid://shopify/Publication/103510278277"
 
 PREAMBLE_MARKER = "this is a featured preorder"
 
-FOOTER_MARKER = "* featured preorder books earn you an extra"
+FOOTER_MARKER = "* featured preorder books earn you an"
 
 
 @dataclass
