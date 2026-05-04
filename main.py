@@ -7,6 +7,7 @@ from routes.reclassify import router as reclassify_router
 from routes.admin_preorders import router as admin_preorders_router
 from routes.internal_events import router as internal_events_router
 from routes.admin_cleanup import router as admin_cleanup_router
+from routes.admin_shipping import router as admin_shipping_router
 
 
 app = FastAPI(title="preorder-service")
@@ -38,6 +39,9 @@ app.include_router(internal_events_router)
 
 # admin cleanup API
 app.include_router(admin_cleanup_router, prefix="/admin/preorders", tags=["admin_cleanup"])
+
+# admin shipping API
+app.include_router(admin_shipping_router, prefix="/admin/preorders", tags=["admin_shipping"])
 
 @app.get("/healthz")
 def healthz(): return {"ok": True}
