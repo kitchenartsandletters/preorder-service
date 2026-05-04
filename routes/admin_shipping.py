@@ -75,7 +75,7 @@ class AssignRequest(BaseModel):
 
 
 # ──────────────────────────────────────────────
-# Endpoints - Shipping Profile Management
+# Endpoints
 # ──────────────────────────────────────────────
 
 @router.get("/shipping/profiles")
@@ -268,6 +268,7 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
     For each active/early_stock preorder product with a pub_date:
     - Check if the product is on the correct date-based profile
     - Report mismatches (wrong profile, missing from profile, should be on General)
+    - Early stock arrivals with inventory > 0 are marked as exempt
     
     Does NOT make changes — returns a report of what needs fixing.
     """
@@ -289,11 +290,11 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
                         "profile_pub_date": profile["pub_date"],
                     }
 
-        # Get active preorder products from Supabase
+        # Get active preorder products from Supabase — include title and inventory
         response = (
             supabase.schema("preorder")
             .table("product_status")
-            .select("product_id, status, effective_pub_date")
+            .select("product_id, status, effective_pub_date, metadata_snapshot")
             .in_("status", ["active_preorder", "early_stock_arrival"])
             .execute()
         )
@@ -304,6 +305,7 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
             "wrong_profile": [],
             "missing_from_profile": [],
             "should_be_removed": [],
+            "exempt": [],
             "no_pub_date": [],
         }
 
@@ -311,10 +313,14 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
             pid = row["product_id"]
             status = row["status"]
             pub_date_str = row.get("effective_pub_date")
+            meta = row.get("metadata_snapshot") or {}
+            title = meta.get("title", f"Product {pid}")
+            inventory = int(meta.get("inventory", 0))
 
             if not pub_date_str:
                 report["no_pub_date"].append({
                     "product_id": pid,
+                    "title": title,
                     "status": status,
                 })
                 continue
@@ -323,11 +329,26 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
             expected_profile_name = pub_date_to_profile_name(pub_date)
             current = product_profile_map.get(pid)
 
+            # Early stock arrivals with inventory on hand are exempt
+            # from shipping profile requirements — they're fulfillable now
+            if status == "early_stock_arrival" and inventory > 0:
+                report["exempt"].append({
+                    "product_id": pid,
+                    "title": title,
+                    "pub_date": pub_date_str,
+                    "status": status,
+                    "inventory": inventory,
+                    "current_profile": current["profile_name"] if current else "General",
+                    "reason": "Early stock on hand — fulfillable without date-based profile",
+                })
+                continue
+
             if pub_date <= today:
                 # Past pub date — should NOT be on a date profile
                 if current:
                     report["should_be_removed"].append({
                         "product_id": pid,
+                        "title": title,
                         "pub_date": pub_date_str,
                         "current_profile": current["profile_name"],
                     })
@@ -337,12 +358,14 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
                 if not current:
                     report["missing_from_profile"].append({
                         "product_id": pid,
+                        "title": title,
                         "pub_date": pub_date_str,
                         "expected_profile": expected_profile_name,
                     })
                 elif current["profile_name"] != expected_profile_name:
                     report["wrong_profile"].append({
                         "product_id": pid,
+                        "title": title,
                         "pub_date": pub_date_str,
                         "expected_profile": expected_profile_name,
                         "current_profile": current["profile_name"],
@@ -350,6 +373,7 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
                 else:
                     report["correctly_assigned"].append({
                         "product_id": pid,
+                        "title": title,
                         "pub_date": pub_date_str,
                         "profile": expected_profile_name,
                     })
@@ -360,6 +384,7 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
                 "wrong_profile": len(report["wrong_profile"]),
                 "missing_from_profile": len(report["missing_from_profile"]),
                 "should_be_removed": len(report["should_be_removed"]),
+                "exempt": len(report["exempt"]),
                 "no_pub_date": len(report["no_pub_date"]),
             },
             "report": report,
@@ -367,6 +392,46 @@ async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
 
     except Exception as e:
         logger.error(f"Failed to reconcile shipping profiles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.close()
+
+
+class RenameProfileRequest(BaseModel):
+    new_name: str
+
+
+@router.post("/shipping/profiles/{profile_id}/rename")
+async def rename_shipping_profile(
+    profile_id: int,
+    request: RenameProfileRequest,
+    ok: bool = Depends(require_admin_token),
+):
+    """
+    Rename a delivery profile. Used to repurpose empty profiles for new pub dates,
+    or correct non-standard profile names.
+    """
+    from services.shipping_profiles import rename_profile
+
+    profile_gid = f"gid://shopify/DeliveryProfile/{profile_id}"
+    client = ShopifyClient()
+    try:
+        errors = await rename_profile(client, profile_gid, request.new_name)
+        if errors:
+            raise HTTPException(status_code=500, detail={
+                "message": "Failed to rename profile",
+                "errors": errors,
+            })
+        return {
+            "profile_id": profile_id,
+            "action": "renamed",
+            "new_name": request.new_name,
+            "message": f"Profile renamed to '{request.new_name}'.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rename profile {profile_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.close()
