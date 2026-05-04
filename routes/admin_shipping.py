@@ -75,7 +75,7 @@ class AssignRequest(BaseModel):
 
 
 # ──────────────────────────────────────────────
-# Endpoints
+# Endpoints - Shipping Profile Management
 # ──────────────────────────────────────────────
 
 @router.get("/shipping/profiles")
