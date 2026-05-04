@@ -78,7 +78,7 @@ class AssignRequest(BaseModel):
 # Endpoints
 # ──────────────────────────────────────────────
 
-@router.get("/shipping/profiles")
+@router.get("/profiles")
 async def list_profiles(ok: bool = Depends(require_admin_token)):
     """
     List all delivery profiles with their assigned products.
@@ -104,7 +104,7 @@ async def list_profiles(ok: bool = Depends(require_admin_token)):
         await client.close()
 
 
-@router.get("/shipping/profiles/by-date/{pub_date}")
+@router.get("/profiles/by-date/{pub_date}")
 async def get_profile_by_date(pub_date: str, ok: bool = Depends(require_admin_token)):
     """
     Find a delivery profile matching a specific pub date.
@@ -137,7 +137,7 @@ async def get_profile_by_date(pub_date: str, ok: bool = Depends(require_admin_to
         await client.close()
 
 
-@router.get("/shipping/profiles/{profile_id}")
+@router.get("/profiles/{profile_id}")
 async def get_profile(profile_id: int, ok: bool = Depends(require_admin_token)):
     """Get detailed information about a specific delivery profile."""
     profile_gid = f"gid://shopify/DeliveryProfile/{profile_id}"
@@ -154,7 +154,7 @@ async def get_profile(profile_id: int, ok: bool = Depends(require_admin_token)):
         await client.close()
 
 
-@router.post("/shipping/profiles/assign/{product_id}")
+@router.post("/profiles/assign/{product_id}")
 async def assign_to_profile(
     product_id: int,
     request: AssignRequest,
@@ -204,7 +204,7 @@ async def assign_to_profile(
         await client.close()
 
 
-@router.post("/shipping/profiles/remove/{product_id}")
+@router.post("/profiles/remove/{product_id}")
 async def remove_from_profile(product_id: int, ok: bool = Depends(require_admin_token)):
     """
     Remove a product from its current delivery profile.
@@ -260,7 +260,7 @@ async def remove_from_profile(product_id: int, ok: bool = Depends(require_admin_
         await client.close()
 
 
-@router.post("/shipping/profiles/reconcile")
+@router.post("/profiles/reconcile")
 async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
     """
     Reconcile all active preorder products with their expected shipping profiles.
