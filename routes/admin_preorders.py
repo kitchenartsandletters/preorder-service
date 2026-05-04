@@ -392,8 +392,19 @@ def mark_reported(
 def get_late_arrivals(ok: bool = Depends(require_admin_token)):
     """
     Returns historical preorder titles with verified late inventory arrival
-    and open lifecycle snapshots.
+    and open lifecycle snapshots. Excludes dismissed alerts.
     """
+    # Get dismissed product IDs for late_arrival alerts
+    dismissed_resp = (
+        supabase
+        .schema("preorder")
+        .table("alert_dismissals")
+        .select("product_id")
+        .eq("alert_type", "late_arrival")
+        .execute()
+    )
+    dismissed_ids = [r["product_id"] for r in (dismissed_resp.data or [])]
+ 
     resp = (
         supabase
         .schema("preorder")
@@ -403,6 +414,84 @@ def get_late_arrivals(ok: bool = Depends(require_admin_token)):
         .eq("arrival_timing", "late_arrival")
         .eq("arrival_record_is_live", True)
         .eq("lifecycle_closed", False)
+        .execute()
+    )
+ 
+    results = [r for r in (resp.data or []) if r["product_id"] not in dismissed_ids]
+    return results
+
+@router.get("/no-arrival-titles")
+def get_no_arrival_titles(ok: bool = Depends(require_admin_token)):
+    """
+    Returns titles past pub date with no inventory received.
+    These need vendor follow-up. Excludes dismissed alerts.
+    """
+    from datetime import date as date_type
+ 
+    dismissed_resp = (
+        supabase
+        .schema("preorder")
+        .table("alert_dismissals")
+        .select("product_id")
+        .eq("alert_type", "no_arrival")
+        .execute()
+    )
+    dismissed_ids = [r["product_id"] for r in (dismissed_resp.data or [])]
+ 
+    resp = (
+        supabase
+        .schema("preorder")
+        .from_("vw_preorder_products")
+        .select("product_id, title, isbn, pub_date, arrival_timing, classification")
+        .eq("arrival_timing", "no_arrival")
+        .lte("pub_date", date_type.today().isoformat())
+        .execute()
+    )
+ 
+    results = [r for r in (resp.data or []) if r["product_id"] not in dismissed_ids]
+    return results
+ 
+ 
+@router.post("/alerts/dismiss/{product_id}")
+def dismiss_alert(product_id: int, payload: dict, ok: bool = Depends(require_admin_token)):
+    """
+    Dismiss an alert for a product.
+    Payload:
+      - alert_type: 'late_arrival' | 'no_arrival'
+      - reason: string (e.g. 'Vendor contacted', 'All orders fulfilled', 'Manual resolution')
+    """
+    from datetime import datetime as dt
+ 
+    alert_type = payload.get("alert_type")
+    reason = payload.get("reason", "")
+ 
+    if alert_type not in ("late_arrival", "no_arrival"):
+        raise HTTPException(status_code=400, detail="alert_type must be 'late_arrival' or 'no_arrival'")
+ 
+    supabase.schema("preorder").table("alert_dismissals").upsert({
+        "product_id": product_id,
+        "alert_type": alert_type,
+        "reason": reason,
+        "dismissed_at": dt.utcnow().isoformat() + "Z",
+    }, on_conflict="product_id,alert_type").execute()
+ 
+    return {
+        "product_id": product_id,
+        "alert_type": alert_type,
+        "action": "dismissed",
+        "reason": reason,
+    }
+ 
+ 
+@router.get("/alerts/dismissed")
+def get_dismissed_alerts(ok: bool = Depends(require_admin_token)):
+    """List all dismissed alerts."""
+    resp = (
+        supabase
+        .schema("preorder")
+        .table("alert_dismissals")
+        .select("*")
+        .order("dismissed_at", desc=True)
         .execute()
     )
     return resp.data or []
