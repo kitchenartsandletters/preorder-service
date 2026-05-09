@@ -119,7 +119,7 @@ async def compute_presale_commitment_total(pool, product_id: int, eff_pub_date: 
         from preorder.commitment_ledger
         where product_id = $1
           and occurred_at < $2
-          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create', 'reconciliation.adjustment')
+          and topic in ('orders/create', 'orders/fulfilled', 'refunds/create')
         """,
         product_id,
         cutoff_utc,
@@ -215,8 +215,7 @@ async def get_current_preorder_committed_qty(pool, product_id: int) -> int:
             when topic in (
                 'orders/create',
                 'orders/fulfilled',
-                'refunds/create',
-                'reconciliation.adjustment'
+                'refunds/create'
             )
             then delta_qty
             else 0
@@ -263,7 +262,7 @@ async def presale_is_fulfilled_phase13_proxy(pool, product_id: int) -> bool:
         return False
 
     committed = await get_current_preorder_committed_qty(pool, product_id)
-    return committed == 0
+    return committed <= 0
 
 
 # -------------------------
