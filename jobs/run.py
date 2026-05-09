@@ -101,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--job",
         required=True,
-        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition"],
+        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition", "order_tagger"],
         help="Job to run",
     )
 
@@ -128,19 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Do not write inserts (commitment_ledger / reconciliation)",
-    )
-
-    parser.add_argument(
-        "--job",
-        required=True,
-        choices=[
-            "commitment_ledger",
-            "lifecycle_snapshotter",
-            "ledger_reconciliation",
-            "pub_date_transition",
-            "order_tagger",          # ← add this
-        ],
-        help="Job to run",
     )
 
     return parser
