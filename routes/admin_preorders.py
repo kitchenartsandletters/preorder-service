@@ -413,11 +413,14 @@ def get_late_arrivals(ok: bool = Depends(require_admin_token)):
         .eq("classification", "historical_preorder")
         .eq("arrival_timing", "late_arrival")
         .eq("arrival_record_is_live", True)
-        .eq("lifecycle_closed", False)
         .execute()
     )
- 
-    results = [r for r in (resp.data or []) if r["product_id"] not in dismissed_ids]
+
+    results = [
+        r for r in (resp.data or [])
+        if r["product_id"] not in dismissed_ids
+        and r.get("lifecycle_closed") == False      # ← filter in Python
+    ]
     return results
 
 @router.get("/no-arrival-titles")
@@ -443,11 +446,13 @@ def get_no_arrival_titles(ok: bool = Depends(require_admin_token)):
         .schema("preorder")
         .from_("vw_preorder_products")
         .select("product_id, title, isbn, pub_date, arrival_timing, classification")
+        .eq("classification", "historical_preorder")   # ← add this, was missing
         .eq("arrival_timing", "no_arrival")
         .lte("pub_date", date_type.today().isoformat())
+        .gte("pub_date", "2026-02-11")                 # ← cutover boundary
         .execute()
     )
- 
+
     results = [r for r in (resp.data or []) if r["product_id"] not in dismissed_ids]
     return results
  
