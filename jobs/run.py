@@ -34,6 +34,7 @@ from build_commitment_ledger import run as run_commitment_ledger
 from lifecycle_snapshotter import run_daily as run_lifecycle_snapshotter
 from ledger_reconciliation import run as run_ledger_reconciliation
 from jobs.pub_date_transition import run as run_pub_date_transition
+from jobs.order_tagger import run as run_order_tagger
 
 UTC = timezone.utc
 
@@ -84,6 +85,12 @@ async def dispatch(args) -> Dict[str, Any]:
     
     if args.job == "pub_date_transition":
         return await run_pub_date_transition_job(args)
+    
+    if args.job == "order_tagger":
+        return await run_order_tagger(
+            limit=args.limit,
+            dry_run=args.dry_run,
+        )
 
     raise ValueError(f"Unknown job: {args.job}")
 
@@ -121,6 +128,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Do not write inserts (commitment_ledger / reconciliation)",
+    )
+
+    parser.add_argument(
+        "--job",
+        required=True,
+        choices=[
+            "commitment_ledger",
+            "lifecycle_snapshotter",
+            "ledger_reconciliation",
+            "pub_date_transition",
+            "order_tagger",          # ← add this
+        ],
+        help="Job to run",
     )
 
     return parser
