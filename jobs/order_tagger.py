@@ -22,7 +22,7 @@ from supabase import create_client, Client
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SHOPIFY_STORE        = os.environ["SHOPIFY_STORE"]
+SHOPIFY_STORE        = os.environ["SHOPIFY_URL"]
 SHOPIFY_ACCESS_TOKEN = os.environ["SHOPIFY_ACCESS_TOKEN"]
 SUPABASE_URL         = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
