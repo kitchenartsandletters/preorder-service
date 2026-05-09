@@ -128,6 +128,8 @@ These are facts established in the Phase 1 audit that must be tracked as open it
 
 **Gap 5: `ledger_reconciliation` cron status unknown.** The reconciliation log shows it was running multiple times per day on 2026-03-31. It is unclear whether it is currently scheduled as a Railway cron job. If it is, it must be disabled immediately. A second execution after the adjustments have been applied will compute delta of zero for all products and insert no new rows — but only if the idempotency guard works correctly. The risk is low but the cron should be explicitly disabled rather than relied upon to be a no-op.
 
+**Gap 6: Manual inventory corrections in Shopify do not fire inventory_levels/update webhooks when the resulting available quantity remains negative.** In this case no inventory_arrival record is written despite physical stock having arrived. Products in deep negative available state due to high presale commitment volumes may incorrectly show arrival_timing: no_arrival even after receiving partial shipments. Operators should manually insert inventory_arrival records for these products when they confirm physical receipt. Future improvement: enrich inventory arrival tracking with Shopify Inventory Adjustments API to capture all stock movements regardless of resulting available quantity.
+
 ---
 
 ### Rules for Phase 3
