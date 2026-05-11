@@ -1,8 +1,0 @@
-[build]
-builder = "nixpacks"
-
-[deploy]
-# Cron runs every 30 min, Mon-Sat, 14:00-22:00 UTC (approx 10am-6pm ET standard time).
-# Adjust to 15:00-23:00 for EDT alignment.
-startCommand = "python jobs/run.py --job order_tagger"
-cronSchedule = "*/30 14-22 * * 1-6"
