@@ -17,6 +17,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from supabase import create_client, Client
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -123,13 +124,14 @@ def tagger_stats(ok: bool = Depends(require_admin_token)):
     )
 
     def sum_window(days: int):
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         rows = (
             supabase
             .schema("preorder")
             .from_("tagger_run_log")
             .select("orders_tagged, preorder_count, mixed_count")
             .in_("status", ["success", "partial"])
-            .gte("started_at", f"now() - interval '{days} days'")
+            .gte("started_at", since)
             .execute()
         )
         return {
