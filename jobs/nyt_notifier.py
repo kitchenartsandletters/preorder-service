@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from supabase import create_client, Client
 
-from jobs.email import send_email
+from jobs.mailtrap import send_email
 
 log = logging.getLogger(__name__)
 
