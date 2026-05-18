@@ -9,6 +9,7 @@ from routes.internal_events import router as internal_events_router
 from routes.admin_cleanup import router as admin_cleanup_router
 from routes.admin_shipping import router as admin_shipping_router
 from routes.admin_tagger import router as admin_tagger_router
+from routes.admin_nyt import router as admin_nyt_router
 
 
 app = FastAPI(title="preorder-service")
@@ -46,6 +47,9 @@ app.include_router(admin_shipping_router, prefix="/admin/preorders", tags=["admi
 
 # admin tagger API
 app.include_router(admin_tagger_router, prefix="/admin/preorders", tags=["admin_tagger"])
+
+# admin NYT report API
+app.include_router(admin_nyt_router, prefix="/admin/preorders", tags=["admin_nyt"])
 
 @app.get("/healthz")
 def healthz(): return {"ok": True}

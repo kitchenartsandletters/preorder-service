@@ -36,6 +36,11 @@ from ledger_reconciliation import run as run_ledger_reconciliation
 from jobs.pub_date_transition import run as run_pub_date_transition
 from jobs.order_tagger import run as run_order_tagger
 
+# 1. Imports (alongside other job imports):
+from jobs.nyt_notifier import run as run_nyt_notifier
+from jobs.nyt_reporter import run as run_nyt_reporter
+
+
 UTC = timezone.utc
 
 def now_utc_iso() -> str:
@@ -91,6 +96,12 @@ async def dispatch(args) -> Dict[str, Any]:
             limit=args.limit,
             dry_run=args.dry_run,
         )
+    
+    if args.job == "nyt_notifier":
+        return await run_nyt_notifier(limit=args.limit, dry_run=args.dry_run)
+
+    if args.job == "nyt_reporter":
+        return await run_nyt_reporter(limit=args.limit, dry_run=args.dry_run)
 
     raise ValueError(f"Unknown job: {args.job}")
 
@@ -101,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--job",
         required=True,
-        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition", "order_tagger"],
+        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition", "order_tagger", "nyt_notifier", "nyt_reporter"],
         help="Job to run",
     )
 
