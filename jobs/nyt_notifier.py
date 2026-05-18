@@ -39,11 +39,9 @@ def _get_supabase() -> Client:
 
 
 def _current_week_bounds() -> tuple[date, date]:
-    """Return Sunday→Saturday bounds for the current ET week."""
     today_et = datetime.now(ET).date()
-    days_since_sunday = today_et.weekday() + 1
-    if today_et.weekday() == 6:
-        days_since_sunday = 0
+    # isoweekday(): Mon=1 ... Sun=7. Days since Sunday = isoweekday() % 7
+    days_since_sunday = today_et.isoweekday() % 7
     week_start = today_et - timedelta(days=days_since_sunday)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end

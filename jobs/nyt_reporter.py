@@ -58,9 +58,8 @@ def _get_supabase() -> Client:
 
 def _current_week_bounds() -> tuple[date, date]:
     today_et = datetime.now(ET).date()
-    days_since_sunday = today_et.weekday() + 1
-    if today_et.weekday() == 6:
-        days_since_sunday = 0
+    # isoweekday(): Mon=1 ... Sun=7. Days since Sunday = isoweekday() % 7
+    days_since_sunday = today_et.isoweekday() % 7
     week_start = today_et - timedelta(days=days_since_sunday)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end
@@ -229,9 +228,7 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
     """
     Upload CSV to bestsellers.nytimes.com.
     Returns (success, failure_reason, screenshot_b64).
-
-    NOTE: Selectors below are templates — validate against the live portal
-    using: playwright codegen https://bestsellers.nytimes.com
+    Credentials and portal URL read from env vars.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -245,52 +242,77 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
-            page    = browser.new_page()
+            context = browser.new_context()
+            page    = context.new_page()
 
-            # 1. Login
-            log.info("Playwright: navigating to NYT portal")
-            page.goto(NYT_PORTAL_URL, wait_until="networkidle", timeout=30_000)
-            page.fill('input[name="username"], input[type="email"]', NYT_PORTAL_USERNAME)
-            page.fill('input[name="password"], input[type="password"]', NYT_PORTAL_PASSWORD)
-            page.click('button[type="submit"], input[type="submit"]')
-            page.wait_for_load_state("networkidle", timeout=20_000)
+            # ── 1. Login ──────────────────────────────────────────────────────
+            log.info("Playwright: navigating to NYT portal login")
+            page.goto("https://bestsellers.nytimes.com/login", wait_until="networkidle")
+            page.get_by_placeholder("Enter username").fill(NYT_PORTAL_USERNAME)
+            page.get_by_placeholder("Password").fill(NYT_PORTAL_PASSWORD)
+            page.get_by_role("button", name="Sign in").click()
+            page.wait_for_load_state("networkidle")
+            log.info("Playwright: logged in")
 
-            # 2. Navigate to upload
-            log.info("Playwright: finding upload section")
-            upload_link = page.locator("a[href*='upload'], a[href*='report'], a:has-text('Upload')")
-            upload_link.first.click()
-            page.wait_for_load_state("networkidle", timeout=15_000)
+            # ── 2. Navigate to upload ─────────────────────────────────────────
+            page.get_by_role("link", name="Upload Spreadsheet").click()
+            page.wait_for_load_state("networkidle")
+            log.info("Playwright: on upload page")
 
-            # 3. Write CSV to temp file and set on file input
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as tmp:
+            # ── 3. Write CSV to temp file ─────────────────────────────────────
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".csv", delete=False,
+                encoding="utf-8", prefix="nyt_report_"
+            ) as tmp:
                 tmp.write(csv_text)
                 tmp_path = tmp.name
 
-            log.info(f"Playwright: uploading {csv_filename}")
-            page.locator('input[type="file"]').set_input_files(tmp_path)
-            time.sleep(1)
+            log.info(f"Playwright: uploading {csv_filename} from {tmp_path}")
 
-            # 4. Submit
-            page.locator('button[type="submit"], input[type="submit"], button:has-text("Submit"), button:has-text("Upload")').first.click()
-            page.wait_for_load_state("networkidle", timeout=20_000)
+            # File input and buttons are inside an iframe
+            frame = page.locator("#spreadsheet_frame").content_frame
 
-            # 5. Confirm success — adjust selector to match portal's actual success state
-            success = page.locator("text=successfully, text=thank you, text=received, .success, [class*='success']")
-            if success.count() == 0:
-                raise RuntimeError("No success indicator found after submission")
+            frame.locator("#filename").set_input_files(tmp_path)
+            frame.get_by_role("button", name="Upload").click()
+            page.wait_for_load_state("networkidle")
 
+            # ── 4. Submit ─────────────────────────────────────────────────────
+            submit_btn = frame.get_by_role("button", name="Submit Spreadsheet Data")
+            submit_btn.click()
+            log.info("Playwright: submit clicked, waiting for confirmation")
+
+            # Success proxy: submit button detaches after successful submission
+            # Timeout after 30s — if it's still there, something went wrong
+            try:
+                submit_btn.wait_for(state="detached", timeout=30_000)
+                log.info("Playwright: submit button detached — upload confirmed")
+            except Exception:
+                # Button didn't detach — take screenshot and check for error text
+                screenshot_b64 = base64.b64encode(page.screenshot()).decode()
+                page_text = page.inner_text("body")
+                error_hint = "unknown"
+                for line in page_text.splitlines():
+                    line = line.strip()
+                    if line and any(w in line.lower() for w in ("error", "invalid", "failed", "rejected")):
+                        error_hint = line[:200]
+                        break
+                raise RuntimeError(
+                    f"Submit button did not detach after 30s. "
+                    f"Possible portal error: {error_hint}"
+                )
+
+            context.close()
             browser.close()
-            log.info("Playwright: upload confirmed")
             return True, None, None
 
     except Exception as exc:
         reason = str(exc)
         log.error(f"Playwright upload failed: {reason}")
-        try:
-            png = page.screenshot()
-            screenshot_b64 = base64.b64encode(png).decode()
-        except Exception:
-            pass
+        if page and screenshot_b64 is None:
+            try:
+                screenshot_b64 = base64.b64encode(page.screenshot()).decode()
+            except Exception:
+                pass
         try:
             browser.close()
         except Exception:
