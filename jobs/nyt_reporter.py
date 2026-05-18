@@ -47,7 +47,7 @@ ADMIN_DASHBOARD_URL       = os.getenv("ADMIN_DASHBOARD_URL", "https://admin.kitc
 NYT_PORTAL_URL            = os.getenv("NYT_PORTAL_URL", "https://bestsellers.nytimes.com")
 NYT_PORTAL_USERNAME       = os.environ["NYT_PORTAL_USERNAME"]
 NYT_PORTAL_PASSWORD       = os.environ["NYT_PORTAL_PASSWORD"]
-SHOPIFY_STORE             = os.environ["SHOPIFY_STORE"]
+SHOPIFY_STORE             = os.environ["SHOP_URL"]
 SHOPIFY_ACCESS_TOKEN      = os.environ["SHOPIFY_ACCESS_TOKEN"]
 SHOPIFY_API_VERSION       = os.getenv("SHOPIFY_API_VERSION", "2025-01")
 
