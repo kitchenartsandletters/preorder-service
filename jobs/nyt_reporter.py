@@ -195,7 +195,8 @@ def _generate_csv(
     metadata: Dict[int, Dict],
     week_end: date,
 ) -> tuple[str, str, int]:
-    filename = f"nyt_report_{week_end.isoformat()}.csv"
+    sales_week_end = week_end - timedelta(days=7)
+    filename = f"nyt_report_sales_week_{sales_week_end.isoformat()}.csv"
     queued_ids = {int(r["product_id"]) for r in queued}
     rows = []
 
