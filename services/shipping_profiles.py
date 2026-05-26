@@ -281,7 +281,8 @@ async def assign_product_to_profile(
     automatically moves it.
     Returns list of userErrors (empty on success).
     """
-    variant_gid = await get_variant_gid_for_product(client, product_id)
+    if not variant_gid:
+        variant_gid = await get_variant_gid_for_product(client, product_id)
 
     result = await client.graphql(
         query=UPDATE_PROFILE_MUTATION,
