@@ -72,6 +72,7 @@ def require_admin_token(x_admin_token: str = Header(default="")):
 
 class AssignRequest(BaseModel):
     pub_date: str  # YYYY-MM-DD
+    variant_gid: Optional[str] = None  # If not provided, assigns all variants of the product
 
 
 # ──────────────────────────────────────────────
@@ -176,7 +177,7 @@ async def assign_to_profile(
         profile = await find_or_create_profile_for_date(client, parsed_date)
 
         # Assign product
-        errors = await assign_product_to_profile(client, profile["profile_gid"], product_id)
+        errors = await assign_product_to_profile(client, profile["profile_gid"], product_id, variant_gid=request.variant_gid,)
 
         if errors:
             raise HTTPException(status_code=500, detail={
