@@ -63,7 +63,7 @@ def send_email(
         attachments.append({
             "filename":     attachment_name,
             "content":      base64.b64encode(attachment_data.encode()).decode(),
-            "content_type": "text/csv",
+            "type": "text/csv",
             "disposition":  "attachment",
         })
 
@@ -71,7 +71,7 @@ def send_email(
         attachments.append({
             "filename":     "playwright_failure.png",
             "content":      screenshot_b64,
-            "content_type": "image/png",
+            "type": "image/png",
             "disposition":  "attachment",
         })
 
