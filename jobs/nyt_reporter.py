@@ -415,7 +415,10 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
     )
 
     # Playwright upload
-    success, failure_reason, screenshot_b64 = _upload_via_playwright(csv_text, csv_filename)
+    import asyncio
+    success, failure_reason, screenshot_b64 = await asyncio.to_thread(
+        _upload_via_playwright, csv_text, csv_filename
+    )
     now_iso = datetime.now(UTC).isoformat()
 
     if success:
