@@ -501,6 +501,236 @@ def get_dismissed_alerts(ok: bool = Depends(require_admin_token)):
     )
     return resp.data or []
 
+# ── NYT Reporting Endpoints ──────────────────────────────────────────────────
+
+@router.get("/nyt/queue")
+def get_nyt_queue(ok: bool = Depends(require_admin_token)):
+    """
+    Returns titles queued for the current week's NYT report
+    (release_state rows with released_to_reporting=False for this week).
+    Also returns the current reporting week bounds.
+    """
+    week_start, week_end = resolve_week_bounds(None)
+
+    # Fetch queued titles for this week
+    queue_resp = (
+        supabase
+        .schema("preorder")
+        .table("release_state")
+        .select("product_id, effective_pub_date, released_at, release_report_week_start, release_report_week_end")
+        .eq("released_to_reporting", False)
+        .eq("release_report_week_start", str(week_start))
+        .execute()
+    )
+
+    product_ids = [int(r["product_id"]) for r in (queue_resp.data or [])]
+
+    # Enrich with product metadata
+    enriched = []
+    if product_ids:
+        meta_resp = (
+            supabase
+            .schema("preorder")
+            .table("product_status")
+            .select("product_id, metadata_snapshot")
+            .in_("product_id", product_ids)
+            .execute()
+        )
+        meta_map = {
+            int(r["product_id"]): r.get("metadata_snapshot") or {}
+            for r in (meta_resp.data or [])
+        }
+
+        for row in (queue_resp.data or []):
+            pid = int(row["product_id"])
+            snap = meta_map.get(pid, {})
+            enriched.append({
+                "product_id": pid,
+                "effective_pub_date": row["effective_pub_date"],
+                "released_at": row["released_at"],
+                "release_report_week_start": row["release_report_week_start"],
+                "release_report_week_end": row["release_report_week_end"],
+                "title": snap.get("title", ""),
+                "isbn": snap.get("isbn", ""),
+                "author": snap.get("author", ""),
+            })
+
+    return {
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "queued": enriched,
+    }
+
+
+@router.get("/nyt/log")
+def get_nyt_log(
+    limit: int = 12,
+    ok: bool = Depends(require_admin_token)
+):
+    """
+    Returns recent NYT report run history from nyt_report_log.
+    """
+    resp = (
+        supabase
+        .schema("preorder")
+        .table("nyt_report_log")
+        .select("id, week_start, week_end, csv_filename, titles_count, upload_status, fallback_reason, notified_at, uploaded_at, created_at")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    return {"log": resp.data or []}
+
+
+@router.get("/nyt/log/{log_id}/csv")
+def download_nyt_log_csv(
+    log_id: str,
+    ok: bool = Depends(require_admin_token)
+):
+    """
+    Returns the stored CSV for a specific report log entry.
+    """
+    resp = (
+        supabase
+        .schema("preorder")
+        .table("nyt_report_log")
+        .select("csv_filename, csv_content")
+        .eq("id", log_id)
+        .single()
+        .execute()
+    )
+
+    if not resp.data or not resp.data.get("csv_content"):
+        raise HTTPException(status_code=404, detail="CSV not found for this log entry")
+
+    filename = resp.data.get("csv_filename") or "nyt_report.csv"
+    return StreamingResponse(
+        iter([resp.data["csv_content"]]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.post("/nyt/trigger")
+def trigger_nyt_report(
+    dry_run: bool = False,
+    ok: bool = Depends(require_admin_token)
+):
+    """
+    Triggers the weekly release engine for the current reporting week.
+    Runs synchronously — for production use Railway cron instead.
+    Produces a combined CSV of queued preorder presales + weekly Shopify sales.
+    Writes result to nyt_report_log.
+    """
+    import subprocess
+    import tempfile
+
+    week_start, week_end = resolve_week_bounds(None)
+
+    cmd = [
+        "python", "-m", "services.weekly_release_engine",
+        "--week", str(week_start),
+        "--output-dir", "/tmp/nyt_output",
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    else:
+        cmd.append("--mark-reported")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd="/app",
+        )
+
+        success = result.returncode == 0
+
+        # Read the generated CSV if it exists
+        csv_content = None
+        csv_filename = f"nyt_{week_end.isoformat()}.csv"
+        csv_path = f"/tmp/nyt_output/{csv_filename}"
+        try:
+            with open(csv_path, "r") as f:
+                csv_content = f.read()
+        except FileNotFoundError:
+            pass
+
+        # Write to nyt_report_log
+        now_utc = datetime.utcnow().isoformat() + "Z"
+        log_payload = {
+            "week_start": str(week_start),
+            "week_end": str(week_end),
+            "csv_filename": csv_filename if csv_content else None,
+            "csv_content": csv_content,
+            "titles_count": csv_content.count("\n") - 1 if csv_content else 0,
+            "upload_status": "success" if success else "error",
+            "fallback_reason": result.stderr[:500] if not success else None,
+            "uploaded_at": now_utc if success and not dry_run else None,
+            "created_at": now_utc,
+        }
+
+        supabase.schema("preorder").table("nyt_report_log").insert(log_payload).execute()
+
+        return {
+            "ok": success,
+            "dry_run": dry_run,
+            "week_start": str(week_start),
+            "week_end": str(week_end),
+            "stdout": result.stdout[-1000:] if result.stdout else "",
+            "stderr": result.stderr[-500:] if result.stderr else "",
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Engine timed out after 120 seconds"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/nyt/mark-uploaded")
+def mark_nyt_uploaded(
+    payload: dict,
+    ok: bool = Depends(require_admin_token)
+):
+    """
+    Manually marks selected queued titles as uploaded after manual CSV submission.
+    Flips released_to_reporting=True for the given product_ids.
+    """
+    product_ids: list[int] = payload.get("product_ids", [])
+    if not product_ids:
+        raise HTTPException(status_code=422, detail="product_ids required")
+
+    week_start, week_end = resolve_week_bounds(None)
+    now_utc = datetime.utcnow().isoformat() + "Z"
+
+    for pid in product_ids:
+        supabase.schema("preorder").table("release_state").update({
+            "released_to_reporting": True,
+            "updated_at": now_utc,
+        }).eq("product_id", pid).eq("release_report_week_start", str(week_start)).execute()
+
+    # Write a fallback log entry
+    supabase.schema("preorder").table("nyt_report_log").insert({
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "csv_filename": None,
+        "csv_content": None,
+        "titles_count": len(product_ids),
+        "upload_status": "fallback",
+        "fallback_reason": "Manually marked as uploaded via admin dashboard",
+        "uploaded_at": now_utc,
+        "created_at": now_utc,
+    }).execute()
+
+    return {
+        "marked": len(product_ids),
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+    }
+
 def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int]:
     """
     Pull net weekly sales from Shopify for the reporting window.

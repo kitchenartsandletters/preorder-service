@@ -194,22 +194,55 @@ def _generate_csv(
     week_sales: Dict[int, int],
     metadata: Dict[int, Dict],
     week_end: date,
+    sb: Client,
 ) -> tuple[str, str, int]:
     sales_week_end = week_end - timedelta(days=7)
     filename = f"nyt_report_sales_week_{sales_week_end.isoformat()}.csv"
     queued_ids = {int(r["product_id"]) for r in queued}
+
+    # Fetch ISBNs for non-preorder products that sold this week
+    non_preorder_pids = [pid for pid in week_sales if pid not in metadata]
+    if non_preorder_pids:
+        result = sb.schema("preorder").from_("product_status").select(
+            "product_id, metadata_snapshot"
+        ).in_("product_id", non_preorder_pids).execute()
+        for row in result.data or []:
+            pid = int(row["product_id"])
+            snap = row.get("metadata_snapshot") or {}
+            metadata[pid] = {
+                "title": snap.get("title", ""),
+                "isbn": (snap.get("isbn") or "").strip(),
+                "author": snap.get("author", ""),
+            }
+
+    # Fetch active/future preorder IDs to exclude from regular weekly sales
+    active_resp = sb.schema("preorder").from_("product_status").select(
+        "product_id, effective_pub_date"
+    ).in_("status", ["active_preorder", "early_stock_arrival"]).execute()
+    exclude_ids: set[int] = set()
+    for row in active_resp.data or []:
+        pub = row.get("effective_pub_date")
+        if pub and pub > str(week_end):
+            exclude_ids.add(int(row["product_id"]))
+
+    all_pids = queued_ids | set(week_sales.keys())
     rows = []
 
-    for pid in queued_ids:
+    for pid in all_pids:
+        # Exclude future preorders unless explicitly queued
+        if pid in exclude_ids and pid not in queued_ids:
+            continue
+
         meta = metadata.get(pid, {})
         isbn = (meta.get("isbn") or "").strip()
         if len(isbn) != 13 or not (isbn.startswith("978") or isbn.startswith("979")):
-            log.warning(f"Skipping product {pid} — invalid ISBN: {isbn!r}")
+            log.debug(f"Skipping product {pid} — invalid ISBN: {isbn!r}")
             continue
+
         qty = presales.get(pid, 0) + week_sales.get(pid, 0)
         if qty <= 0:
-            log.warning(f"Skipping product {pid} — qty is 0")
             continue
+
         rows.append({"isbn": isbn, "qty": qty})
 
     rows.sort(key=lambda r: r["isbn"])
@@ -375,18 +408,16 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         return {"skipped": True, "reason": "already_uploaded", "week_start": str(week_start)}
 
     queued = _fetch_queued_titles(sb, week_start, week_end)
-    if not queued:
-        log.info("No queued titles — nothing to report")
-        return {"skipped": True, "reason": "no_queued_titles", "week_start": str(week_start)}
-
     product_ids = [int(r["product_id"]) for r in queued]
-    log.info(f"Queued: {len(queued)} titles")
+    log.info(f"Queued preorder titles: {len(queued)}")
 
-    presales   = _fetch_presale_qtys(sb, product_ids)
+    presales   = _fetch_presale_qtys(sb, product_ids) if product_ids else {}
     week_sales = _fetch_shopify_week_sales(week_start, week_end)
-    metadata   = _fetch_product_metadata(sb, product_ids)
+    metadata   = _fetch_product_metadata(sb, product_ids) if product_ids else {}
 
-    csv_text, csv_filename, row_count = _generate_csv(queued, presales, week_sales, metadata, week_end)
+    csv_text, csv_filename, row_count = _generate_csv(
+        queued, presales, week_sales, metadata, week_end, sb
+    )
 
     if row_count == 0:
         log.warning("CSV has 0 valid rows — aborting")
