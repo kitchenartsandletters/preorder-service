@@ -274,6 +274,7 @@ async def assign_product_to_profile(
     client: Any,
     profile_gid: str,
     product_id: int,
+    variant_gid: Optional[str] = None,
 ) -> List[Dict]:
     """
     Assign a product (via its first variant) to a delivery profile.
