@@ -58,9 +58,10 @@ def _get_supabase() -> Client:
 
 def _current_week_bounds() -> tuple[date, date]:
     today_et = datetime.now(ET).date()
-    # isoweekday(): Mon=1 ... Sun=7. Days since Sunday = isoweekday() % 7
     days_since_sunday = today_et.isoweekday() % 7
-    week_start = today_et - timedelta(days=days_since_sunday)
+    this_week_start = today_et - timedelta(days=days_since_sunday)
+    # Reports always cover the prior completed week
+    week_start = this_week_start - timedelta(days=7)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end
 
@@ -132,17 +133,27 @@ def _fetch_product_metadata(sb: Client, product_ids: List[int]) -> Dict[int, Dic
 
 def _fetch_shopify_week_sales(week_start: date, week_end: date) -> Dict[int, int]:
     import httpx
+    from datetime import timezone
 
-    start_iso = f"{week_start}T00:00:00-05:00"
-    end_iso   = f"{week_end}T23:59:59-05:00"
-    query_str = f"created_at:>={start_iso} created_at:<={end_iso} financial_status:paid"
+    UTC = timezone.utc
+
+    # Convert ET midnight boundaries to UTC correctly using ZoneInfo
+    # This handles EDT (UTC-4) vs EST (UTC-5) automatically
+    week_start_et = datetime.combine(week_start, datetime.min.time(), tzinfo=ET)
+    week_end_exclusive_et = datetime.combine(
+        week_end + timedelta(days=1), datetime.min.time(), tzinfo=ET
+    )
+    start_utc = week_start_et.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_utc   = week_end_exclusive_et.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    query_str = f"created_at:>={start_utc} created_at:<{end_utc} financial_status:paid"
 
     QUERY = """
     query WeekSales($q: String!, $first: Int!, $after: String) {
       orders(query: $q, first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          lineItems(first: 50) {
+          lineItems(first: 250) {
             nodes {
               product { id }
               currentQuantity
@@ -156,15 +167,18 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> Dict[int, int
     sales: Dict[int, int] = {}
     cursor = None
 
-    with httpx.Client(timeout=30.0) as client:
+    with httpx.Client(timeout=60.0) as client:
         while True:
-            variables: Dict[str, Any] = {"q": query_str, "first": 50}
+            variables: Dict[str, Any] = {"q": query_str, "first": 250}
             if cursor:
                 variables["after"] = cursor
             resp = client.post(
                 f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/graphql.json",
                 json={"query": QUERY, "variables": variables},
-                headers={"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN, "Content-Type": "application/json"},
+                headers={
+                    "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+                    "Content-Type": "application/json"
+                },
             )
             resp.raise_for_status()
             data = resp.json()["data"]["orders"]
@@ -197,7 +211,7 @@ def _generate_csv(
     sb: Client,
 ) -> tuple[str, str, int]:
     sales_week_end = week_end - timedelta(days=7)
-    filename = f"nyt_report_sales_week_{sales_week_end.isoformat()}.csv"
+    filename = f"nyt_report_sales_week_{week_end.isoformat()}.csv"
     queued_ids = {int(r["product_id"]) for r in queued}
 
     # Fetch ISBNs for non-preorder products that sold this week

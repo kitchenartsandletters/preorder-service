@@ -51,9 +51,10 @@ def require_admin_token(x_admin_token: str = Header(default="")):
 # ── Week helpers ──────────────────────────────────────────────────────────────
 def _current_week_bounds() -> tuple[date, date]:
     today_et = datetime.now(ET).date()
-    # isoweekday(): Mon=1 ... Sun=7. Days since Sunday = isoweekday() % 7
     days_since_sunday = today_et.isoweekday() % 7
-    week_start = today_et - timedelta(days=days_since_sunday)
+    this_week_start = today_et - timedelta(days=days_since_sunday)
+    # Reports always cover the prior completed week
+    week_start = this_week_start - timedelta(days=7)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end
 
