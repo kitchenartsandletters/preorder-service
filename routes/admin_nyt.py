@@ -267,14 +267,15 @@ def regenerate_nyt_report(
     if not week_anchor:
         raise HTTPException(status_code=422, detail="week_anchor required")
 
+    # week_anchor IS the sales week — compute sales bounds directly
     anchor = date.fromisoformat(week_anchor)
     days_since_sunday = anchor.isoweekday() % 7
-    # week_anchor is the queue week start (when titles were staged)
-    queue_start = anchor - timedelta(days=days_since_sunday)
-    queue_end   = queue_start + timedelta(days=6)
-    # Sales week is the prior completed week
-    sales_start = queue_start - timedelta(days=7)
-    sales_end   = queue_start - timedelta(days=1)
+    sales_start = anchor - timedelta(days=days_since_sunday)
+    sales_end   = sales_start + timedelta(days=6)
+
+    # Queue week is the following week
+    queue_start = sales_start + timedelta(days=7)
+    queue_end   = sales_end + timedelta(days=7)
 
     print(f"[regen] queue={queue_start}→{queue_end} sales={sales_start}→{sales_end}", flush=True)
 
