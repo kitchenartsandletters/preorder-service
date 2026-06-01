@@ -241,3 +241,69 @@ def mark_uploaded_manually(
         "week_start": str(week_start),
         "week_end":   str(week_end),
     }
+
+@router.post("/nyt/regenerate")
+def regenerate_nyt_report(
+    payload: dict,
+    ok: bool = Depends(require_admin_token)
+):
+    """
+    Regenerate the CSV for a specific reporting week without uploading.
+    Stores corrected CSV in nyt_report_log for the specified week.
+    Use when the automated run produced incorrect data.
+    Body: { "week_anchor": "2026-05-24" }
+    """
+    from datetime import timezone
+    week_anchor = payload.get("week_anchor")
+    if not week_anchor:
+        raise HTTPException(status_code=422, detail="week_anchor required")
+
+    anchor = date.fromisoformat(week_anchor)
+    days_since_sunday = anchor.isoweekday() % 7
+    week_start = anchor - timedelta(days=days_since_sunday)
+    week_end = week_start + timedelta(days=6)
+
+    # Import engine components
+    from jobs.nyt_reporter import (
+        _fetch_queued_titles,
+        _fetch_presale_qtys,
+        _fetch_product_metadata,
+        _fetch_shopify_week_sales,
+        _generate_csv,
+        _get_supabase,
+    )
+
+    sb = _get_supabase()
+    queued = _fetch_queued_titles(sb, week_start, week_end)
+    product_ids = [int(r["product_id"]) for r in queued]
+    presales = _fetch_presale_qtys(sb, product_ids) if product_ids else {}
+    week_sales = _fetch_shopify_week_sales(week_start, week_end)
+    metadata = _fetch_product_metadata(sb, product_ids) if product_ids else {}
+    csv_text, csv_filename, row_count = _generate_csv(
+        queued, presales, week_sales, metadata, week_end, sb
+    )
+
+    now_utc = datetime.utcnow().isoformat() + "Z"
+
+    # Upsert corrected log entry
+    supabase.schema("preorder").table("nyt_report_log").upsert(
+        {
+            "week_start": str(week_start),
+            "week_end": str(week_end),
+            "csv_filename": csv_filename,
+            "csv_content": csv_text,
+            "titles_count": row_count,
+            "upload_status": "fallback",
+            "fallback_reason": f"Regenerated {now_utc} — original run had incorrect data",
+            "uploaded_at": None,
+            "created_at": now_utc,
+        },
+        on_conflict="week_start,week_end",
+    ).execute()
+
+    return {
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "row_count": row_count,
+        "csv_filename": csv_filename,
+    }
