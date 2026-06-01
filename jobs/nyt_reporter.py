@@ -217,7 +217,6 @@ def _generate_csv(
     week_end: date,
     sb: Client,
 ) -> tuple[str, str, int]:
-    sales_week_end = week_end - timedelta(days=7)
     filename = f"nyt_report_sales_week_{week_end.isoformat()}.csv"
     queued_ids = {int(r["product_id"]) for r in queued}
 
@@ -425,9 +424,9 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
 
     log.info(f"NYT reporter — queue week {queue_start}→{queue_end}  sales week {sales_start}→{sales_end}  dry_run={dry_run}")
 
-    if not dry_run and _already_uploaded(sb, queue_start):
+    if not dry_run and _already_uploaded(sb, sales_start):
         log.info("Already successfully uploaded for this week — exiting")
-        return {"skipped": True, "reason": "already_uploaded", "week_start": str(queue_start)}
+        return {"skipped": True, "reason": "already_uploaded", "week_start": str(sales_start)}
 
     queued = _fetch_queued_titles(sb, queue_start, queue_end)
     product_ids = [int(r["product_id"]) for r in queued]
@@ -443,7 +442,7 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
 
     if row_count == 0:
         log.warning("CSV has 0 valid rows — aborting")
-        return {"skipped": True, "reason": "zero_rows", "week_start": str(week_start)}
+        return {"skipped": True, "reason": "zero_rows", "week_start": str(sales_start)}
 
     log.info(f"CSV ready: {row_count} rows → {csv_filename}")
 
@@ -451,8 +450,8 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         log.info(f"[dry_run] Would upload {row_count} rows\n{csv_text[:400]}")
         return {
             "dry_run":      True,
-            "week_start":   str(week_start),
-            "week_end":     str(week_end),
+            "week_start":   str(sales_start),
+            "week_end":     str(sales_end),
             "titles_count": len(queued),
             "row_count":    row_count,
             "csv_preview":  csv_text[:400],
@@ -479,7 +478,7 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         log.info("Upload successful")
         _mark_titles_uploaded(sb, queued)
         _write_log(
-            sb, queue_start, queue_end, csv_filename, csv_text,
+            sb, sales_start, sales_end, csv_filename, csv_text,
             titles_count=len(queued), upload_status="success", uploaded_at=now_iso,
         )
         return {"uploaded": True, "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count}
@@ -487,7 +486,7 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
     else:
         log.error(f"Upload failed: {failure_reason}")
         _write_log(
-            sb, queue_start, queue_end, csv_filename, csv_text,
+            sb, sales_start, sales_end, csv_filename, csv_text,
             titles_count=len(queued), upload_status="fallback",
             fallback_reason=failure_reason, screenshot_b64=screenshot_b64,
         )

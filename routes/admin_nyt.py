@@ -295,25 +295,23 @@ def regenerate_nyt_report(
 
     now_utc = datetime.utcnow().isoformat() + "Z"
     supabase.schema("preorder").table("nyt_report_log").upsert(
-        {
-            "week_start": str(queue_start),
-            "week_end":   str(queue_end),
-            "csv_filename": csv_filename,
-            "csv_content":  csv_text,
-            "titles_count": row_count,
-            "upload_status": "fallback",
-            "fallback_reason": f"Regenerated {now_utc} — original run had incorrect data",
-            "uploaded_at": None,
-            "created_at":  now_utc,
-        },
-        on_conflict="week_start,week_end",
+    {
+        "week_start": str(sales_start),   # ← sales week, not queue week
+        "week_end":   str(sales_end),     # ← sales week
+        "csv_filename": csv_filename,
+        "csv_content":  csv_text,
+        "titles_count": row_count,
+        "upload_status": "fallback",
+        "fallback_reason": f"Regenerated {now_utc} — original run had incorrect data",
+        "uploaded_at": None,
+        "created_at":  now_utc,
+    },
+    on_conflict="week_start,week_end",
     ).execute()
 
     return {
-        "week_start": str(queue_start),
-        "week_end":   str(queue_end),
-        "sales_start": str(sales_start),
-        "sales_end":   str(sales_end),
-        "row_count":   row_count,
+        "week_start": str(sales_start),
+        "week_end":   str(sales_end),
+        "row_count":  row_count,
         "csv_filename": csv_filename,
     }
