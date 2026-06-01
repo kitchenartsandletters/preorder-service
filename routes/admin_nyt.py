@@ -283,7 +283,10 @@ def regenerate_nyt_report(
         queued, presales, week_sales, metadata, week_end, sb
     )
 
-    logger.info(f"[regen] csv rows: {row_count}")
+    print(f"[regen] week_anchor={week_anchor} → week_start={week_start} week_end={week_end}", flush=True)
+    print(f"[regen] queued titles: {len(queued)}", flush=True)
+    print(f"[regen] shopify_sales products: {len(week_sales)} total_units: {sum(week_sales.values())}", flush=True)
+    print(f"[regen] csv rows: {row_count}", flush=True)
 
     now_utc = datetime.utcnow().isoformat() + "Z"
     supabase.schema("preorder").table("nyt_report_log").upsert(
