@@ -57,11 +57,18 @@ def _get_supabase() -> Client:
 
 
 def _current_week_bounds() -> tuple[date, date]:
+    """Returns the current Sunday–Saturday calendar week (queue week)."""
     today_et = datetime.now(ET).date()
     days_since_sunday = today_et.isoweekday() % 7
-    this_week_start = today_et - timedelta(days=days_since_sunday)
-    # Reports always cover the prior completed Sunday–Saturday week
-    week_start = this_week_start - timedelta(days=7)
+    week_start = today_et - timedelta(days=days_since_sunday)
+    week_end   = week_start + timedelta(days=6)
+    return week_start, week_end
+
+
+def _sales_week_bounds() -> tuple[date, date]:
+    """Returns the prior completed Sunday–Saturday week (sales week to report)."""
+    queue_start, _ = _current_week_bounds()
+    week_start = queue_start - timedelta(days=7)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end
 
@@ -413,24 +420,25 @@ def _write_log(
 async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
     """Called by jobs/run.py --job nyt_reporter."""
     sb = _get_supabase()
-    week_start, week_end = _current_week_bounds()
+    queue_start, queue_end = _current_week_bounds()
+    sales_start, sales_end = _sales_week_bounds()
 
-    log.info(f"NYT reporter — week {week_start} → {week_end}  dry_run={dry_run}")
+    log.info(f"NYT reporter — queue week {queue_start}→{queue_end}  sales week {sales_start}→{sales_end}  dry_run={dry_run}")
 
-    if not dry_run and _already_uploaded(sb, week_start):
+    if not dry_run and _already_uploaded(sb, queue_start):
         log.info("Already successfully uploaded for this week — exiting")
-        return {"skipped": True, "reason": "already_uploaded", "week_start": str(week_start)}
+        return {"skipped": True, "reason": "already_uploaded", "week_start": str(queue_start)}
 
-    queued = _fetch_queued_titles(sb, week_start, week_end)
+    queued = _fetch_queued_titles(sb, queue_start, queue_end)
     product_ids = [int(r["product_id"]) for r in queued]
     log.info(f"Queued preorder titles: {len(queued)}")
 
     presales   = _fetch_presale_qtys(sb, product_ids) if product_ids else {}
-    week_sales = _fetch_shopify_week_sales(week_start, week_end)
+    week_sales = _fetch_shopify_week_sales(sales_start, sales_end)
     metadata   = _fetch_product_metadata(sb, product_ids) if product_ids else {}
 
     csv_text, csv_filename, row_count = _generate_csv(
-        queued, presales, week_sales, metadata, week_end, sb
+        queued, presales, week_sales, metadata, sales_end, sb
     )
 
     if row_count == 0:
@@ -451,7 +459,7 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         }
 
     # Email CSV to distribution list
-    week_str = f"{week_start.strftime('%b %-d')} – {week_end.strftime('%b %-d, %Y')}"
+    week_str = f"{sales_start.strftime('%b %-d')} – {sales_end.strftime('%b %-d, %Y')}"
     send_email(
         subject=f"NYT Report {week_str} — {row_count} titles",
         html_body=f"<p>NYT report attached for the week of {week_str}. Uploading to portal now.</p>",
@@ -471,15 +479,15 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         log.info("Upload successful")
         _mark_titles_uploaded(sb, queued)
         _write_log(
-            sb, week_start, week_end, csv_filename, csv_text,
+            sb, queue_start, queue_end, csv_filename, csv_text,
             titles_count=len(queued), upload_status="success", uploaded_at=now_iso,
         )
-        return {"uploaded": True, "week_start": str(week_start), "titles_count": len(queued), "row_count": row_count}
+        return {"uploaded": True, "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count}
 
     else:
         log.error(f"Upload failed: {failure_reason}")
         _write_log(
-            sb, week_start, week_end, csv_filename, csv_text,
+            sb, queue_start, queue_end, csv_filename, csv_text,
             titles_count=len(queued), upload_status="fallback",
             fallback_reason=failure_reason, screenshot_b64=screenshot_b64,
         )
@@ -508,5 +516,5 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         return {
             "uploaded": False, "fallback": True,
             "failure_reason": failure_reason,
-            "week_start": str(week_start), "titles_count": len(queued), "row_count": row_count,
+            "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count,
         }

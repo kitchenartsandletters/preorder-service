@@ -59,11 +59,18 @@ def require_admin_token(x_admin_token: str = Header(default="")):
 
 # ── Week helpers ──────────────────────────────────────────────────────────────
 def _current_week_bounds() -> tuple[date, date]:
+    """Returns the current Sunday–Saturday calendar week (queue week)."""
     today_et = datetime.now(ET).date()
     days_since_sunday = today_et.isoweekday() % 7
-    this_week_start = today_et - timedelta(days=days_since_sunday)
-    # Reports always cover the prior completed Sunday–Saturday week
-    week_start = this_week_start - timedelta(days=7)
+    week_start = today_et - timedelta(days=days_since_sunday)
+    week_end   = week_start + timedelta(days=6)
+    return week_start, week_end
+
+
+def _sales_week_bounds() -> tuple[date, date]:
+    """Returns the prior completed Sunday–Saturday week (sales week to report)."""
+    queue_start, _ = _current_week_bounds()
+    week_start = queue_start - timedelta(days=7)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end
 
@@ -262,46 +269,50 @@ def regenerate_nyt_report(
 
     anchor = date.fromisoformat(week_anchor)
     days_since_sunday = anchor.isoweekday() % 7
-    week_start = anchor - timedelta(days=days_since_sunday)
-    week_end = week_start + timedelta(days=6)
+    # week_anchor is the queue week start (when titles were staged)
+    queue_start = anchor - timedelta(days=days_since_sunday)
+    queue_end   = queue_start + timedelta(days=6)
+    # Sales week is the prior completed week
+    sales_start = queue_start - timedelta(days=7)
+    sales_end   = queue_start - timedelta(days=1)
 
-    print(f"[regen] week_start={week_start} week_end={week_end}", flush=True)
+    print(f"[regen] queue={queue_start}→{queue_end} sales={sales_start}→{sales_end}", flush=True)
 
-    # Use module-level supabase client — do not import _get_supabase from nyt_reporter
-    queued = _fetch_queued_titles(supabase, week_start, week_end)
+    queued = _fetch_queued_titles(supabase, queue_start, queue_end)
     print(f"[regen] queued={len(queued)}", flush=True)
 
     product_ids = [int(r["product_id"]) for r in queued]
     presales = _fetch_presale_qtys(supabase, product_ids) if product_ids else {}
-    week_sales = _nyt_fetch_shopify_week_sales(week_start, week_end)
+    week_sales = _nyt_fetch_shopify_week_sales(sales_start, sales_end)
     print(f"[regen] shopify products={len(week_sales)} units={sum(week_sales.values())}", flush=True)
 
     metadata = _fetch_product_metadata(supabase, product_ids) if product_ids else {}
     csv_text, csv_filename, row_count = _generate_csv(
-        queued, presales, week_sales, metadata, week_end, supabase
+        queued, presales, week_sales, metadata, sales_end, supabase
     )
     print(f"[regen] csv rows={row_count}", flush=True)
-    print(f"[regen] api_version={os.getenv('SHOPIFY_API_VERSION', 'NOT SET')}", flush=True)
 
     now_utc = datetime.utcnow().isoformat() + "Z"
     supabase.schema("preorder").table("nyt_report_log").upsert(
         {
-            "week_start": str(week_start),
-            "week_end": str(week_end),
+            "week_start": str(queue_start),
+            "week_end":   str(queue_end),
             "csv_filename": csv_filename,
-            "csv_content": csv_text,
+            "csv_content":  csv_text,
             "titles_count": row_count,
             "upload_status": "fallback",
             "fallback_reason": f"Regenerated {now_utc} — original run had incorrect data",
             "uploaded_at": None,
-            "created_at": now_utc,
+            "created_at":  now_utc,
         },
         on_conflict="week_start,week_end",
     ).execute()
 
     return {
-        "week_start": str(week_start),
-        "week_end": str(week_end),
-        "row_count": row_count,
+        "week_start": str(queue_start),
+        "week_end":   str(queue_end),
+        "sales_start": str(sales_start),
+        "sales_end":   str(sales_end),
+        "row_count":   row_count,
         "csv_filename": csv_filename,
     }
