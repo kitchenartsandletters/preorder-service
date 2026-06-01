@@ -25,13 +25,12 @@ from supabase import create_client, Client
 from fastapi.responses import PlainTextResponse
 from jobs.nyt_reporter import run as run_reporter
 from jobs.nyt_reporter import (
-        _fetch_queued_titles,
-        _fetch_presale_qtys,
-        _fetch_product_metadata,
-        _fetch_shopify_week_sales,
-        _generate_csv,
-        _get_supabase,
-    )
+    _fetch_queued_titles,
+    _fetch_presale_qtys,
+    _fetch_product_metadata,
+    _fetch_shopify_week_sales as _nyt_fetch_shopify_week_sales,
+    _generate_csv,
+)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -256,7 +255,7 @@ def regenerate_nyt_report(
     ok: bool = Depends(require_admin_token)
 ):
     print("[regen] endpoint entered", flush=True)
-    
+
     week_anchor = payload.get("week_anchor")
     if not week_anchor:
         raise HTTPException(status_code=422, detail="week_anchor required")
@@ -268,18 +267,18 @@ def regenerate_nyt_report(
 
     print(f"[regen] week_start={week_start} week_end={week_end}", flush=True)
 
-    sb = _nyt_get_supabase()
-    queued = _fetch_queued_titles(sb, week_start, week_end)
+    # Use module-level supabase client — do not import _get_supabase from nyt_reporter
+    queued = _fetch_queued_titles(supabase, week_start, week_end)
     print(f"[regen] queued={len(queued)}", flush=True)
 
     product_ids = [int(r["product_id"]) for r in queued]
-    presales = _fetch_presale_qtys(sb, product_ids) if product_ids else {}
+    presales = _fetch_presale_qtys(supabase, product_ids) if product_ids else {}
     week_sales = _nyt_fetch_shopify_week_sales(week_start, week_end)
     print(f"[regen] shopify products={len(week_sales)} units={sum(week_sales.values())}", flush=True)
 
-    metadata = _fetch_product_metadata(sb, product_ids) if product_ids else {}
+    metadata = _fetch_product_metadata(supabase, product_ids) if product_ids else {}
     csv_text, csv_filename, row_count = _generate_csv(
-        queued, presales, week_sales, metadata, week_end, sb
+        queued, presales, week_sales, metadata, week_end, supabase
     )
     print(f"[regen] csv rows={row_count}", flush=True)
 
