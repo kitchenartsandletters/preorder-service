@@ -689,48 +689,6 @@ def trigger_nyt_report(
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-
-@router.post("/nyt/mark-uploaded")
-def mark_nyt_uploaded(
-    payload: dict,
-    ok: bool = Depends(require_admin_token)
-):
-    """
-    Manually marks selected queued titles as uploaded after manual CSV submission.
-    Flips released_to_reporting=True for the given product_ids.
-    """
-    product_ids: list[int] = payload.get("product_ids", [])
-    if not product_ids:
-        raise HTTPException(status_code=422, detail="product_ids required")
-
-    week_start, week_end = resolve_week_bounds(None)
-    now_utc = datetime.utcnow().isoformat() + "Z"
-
-    for pid in product_ids:
-        supabase.schema("preorder").table("release_state").update({
-            "released_to_reporting": True,
-            "updated_at": now_utc,
-        }).eq("product_id", pid).eq("release_report_week_start", str(week_start)).execute()
-
-    # Write a fallback log entry
-    supabase.schema("preorder").table("nyt_report_log").insert({
-        "week_start": str(week_start),
-        "week_end": str(week_end),
-        "csv_filename": None,
-        "csv_content": None,
-        "titles_count": len(product_ids),
-        "upload_status": "fallback",
-        "fallback_reason": "Manually marked as uploaded via admin dashboard",
-        "uploaded_at": now_utc,
-        "created_at": now_utc,
-    }).execute()
-
-    return {
-        "marked": len(product_ids),
-        "week_start": str(week_start),
-        "week_end": str(week_end),
-    }
-
 def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int]:
     """
     Pull net weekly sales from Shopify for the reporting window.

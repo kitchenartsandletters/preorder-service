@@ -210,8 +210,8 @@ def mark_uploaded_manually(
     the CSV to the portal themselves after a Playwright failure.
     Also flips nyt_report_log to status='success' for the current week.
     """
-    if not payload.product_ids:
-        raise HTTPException(status_code=422, detail="product_ids required")
+    if not payload.product_ids and not payload.week_anchor:
+        raise HTTPException(status_code=422, detail="product_ids or week_anchor required")
 
     if payload.week_anchor:
         anchor = date.fromisoformat(payload.week_anchor)
