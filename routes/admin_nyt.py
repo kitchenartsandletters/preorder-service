@@ -19,9 +19,19 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from supabase import create_client, Client
 from fastapi.responses import PlainTextResponse
+from jobs.nyt_reporter import run as run_reporter
+from jobs.nyt_reporter import (
+        _fetch_queued_titles,
+        _fetch_presale_qtys,
+        _fetch_product_metadata,
+        _fetch_shopify_week_sales,
+        _generate_csv,
+        _get_supabase,
+    )
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -151,8 +161,7 @@ def download_log_csv(log_id: str, ok: bool = Depends(require_admin_token)):
     )
     if not result.data or not result.data.get("csv_content"):
         raise HTTPException(status_code=404, detail="CSV not found for this log entry")
-
-    from fastapi.responses import Response
+    
     return Response(
         content=result.data["csv_content"],
         media_type="text/csv",
@@ -171,7 +180,6 @@ def trigger_nyt_reporter(
     """
     async def _run():
         try:
-            from jobs.nyt_reporter import run as run_reporter
             result = await run_reporter(dry_run=dry_run)
             logger.info(f"nyt_reporter completed: {result}")
         except Exception as exc:
@@ -247,15 +255,8 @@ def regenerate_nyt_report(
     payload: dict,
     ok: bool = Depends(require_admin_token)
 ):
-    from jobs.nyt_reporter import (
-        _fetch_queued_titles,
-        _fetch_presale_qtys,
-        _fetch_product_metadata,
-        _fetch_shopify_week_sales,
-        _generate_csv,
-        _get_supabase,
-    )
-
+    print("[regen] endpoint entered", flush=True)
+    
     week_anchor = payload.get("week_anchor")
     if not week_anchor:
         raise HTTPException(status_code=422, detail="week_anchor required")
@@ -265,28 +266,22 @@ def regenerate_nyt_report(
     week_start = anchor - timedelta(days=days_since_sunday)
     week_end = week_start + timedelta(days=6)
 
-    logger.info(f"[regen] week_anchor={week_anchor} → week_start={week_start} week_end={week_end}")
+    print(f"[regen] week_start={week_start} week_end={week_end}", flush=True)
 
-    sb = _get_supabase()
+    sb = _nyt_get_supabase()
     queued = _fetch_queued_titles(sb, week_start, week_end)
+    print(f"[regen] queued={len(queued)}", flush=True)
+
     product_ids = [int(r["product_id"]) for r in queued]
-
-    logger.info(f"[regen] queued titles: {len(queued)}")
-
     presales = _fetch_presale_qtys(sb, product_ids) if product_ids else {}
-    week_sales = _fetch_shopify_week_sales(week_start, week_end)
-
-    logger.info(f"[regen] shopify_sales products: {len(week_sales)} total_units: {sum(week_sales.values())}")
+    week_sales = _nyt_fetch_shopify_week_sales(week_start, week_end)
+    print(f"[regen] shopify products={len(week_sales)} units={sum(week_sales.values())}", flush=True)
 
     metadata = _fetch_product_metadata(sb, product_ids) if product_ids else {}
     csv_text, csv_filename, row_count = _generate_csv(
         queued, presales, week_sales, metadata, week_end, sb
     )
-
-    print(f"[regen] week_anchor={week_anchor} → week_start={week_start} week_end={week_end}", flush=True)
-    print(f"[regen] queued titles: {len(queued)}", flush=True)
-    print(f"[regen] shopify_sales products: {len(week_sales)} total_units: {sum(week_sales.values())}", flush=True)
-    print(f"[regen] csv rows: {row_count}", flush=True)
+    print(f"[regen] csv rows={row_count}", flush=True)
 
     now_utc = datetime.utcnow().isoformat() + "Z"
     supabase.schema("preorder").table("nyt_report_log").upsert(
