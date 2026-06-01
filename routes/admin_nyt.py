@@ -53,7 +53,7 @@ def _current_week_bounds() -> tuple[date, date]:
     today_et = datetime.now(ET).date()
     days_since_sunday = today_et.isoweekday() % 7
     this_week_start = today_et - timedelta(days=days_since_sunday)
-    # Reports always cover the prior completed week
+    # Reports always cover the prior completed Sunday–Saturday week
     week_start = this_week_start - timedelta(days=7)
     week_end   = week_start + timedelta(days=6)
     return week_start, week_end

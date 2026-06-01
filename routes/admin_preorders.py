@@ -759,7 +759,7 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int
         pageInfo { hasNextPage endCursor }
         edges {
           node {
-            lineItems(first: 50) {
+            lineItems(first: 250) {
               edges {
                 node {
                   product { legacyResourceId }
