@@ -281,6 +281,7 @@ def regenerate_nyt_report(
         queued, presales, week_sales, metadata, week_end, supabase
     )
     print(f"[regen] csv rows={row_count}", flush=True)
+    print(f"[regen] api_version={os.getenv('SHOPIFY_API_VERSION', 'NOT SET')}", flush=True)
 
     now_utc = datetime.utcnow().isoformat() + "Z"
     supabase.schema("preorder").table("nyt_report_log").upsert(
