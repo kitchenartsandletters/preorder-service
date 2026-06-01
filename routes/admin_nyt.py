@@ -247,23 +247,6 @@ def regenerate_nyt_report(
     payload: dict,
     ok: bool = Depends(require_admin_token)
 ):
-    """
-    Regenerate the CSV for a specific reporting week without uploading.
-    Stores corrected CSV in nyt_report_log for the specified week.
-    Use when the automated run produced incorrect data.
-    Body: { "week_anchor": "2026-05-24" }
-    """
-    from datetime import timezone
-    week_anchor = payload.get("week_anchor")
-    if not week_anchor:
-        raise HTTPException(status_code=422, detail="week_anchor required")
-
-    anchor = date.fromisoformat(week_anchor)
-    days_since_sunday = anchor.isoweekday() % 7
-    week_start = anchor - timedelta(days=days_since_sunday)
-    week_end = week_start + timedelta(days=6)
-
-    # Import engine components
     from jobs.nyt_reporter import (
         _fetch_queued_titles,
         _fetch_presale_qtys,
@@ -273,19 +256,36 @@ def regenerate_nyt_report(
         _get_supabase,
     )
 
+    week_anchor = payload.get("week_anchor")
+    if not week_anchor:
+        raise HTTPException(status_code=422, detail="week_anchor required")
+
+    anchor = date.fromisoformat(week_anchor)
+    days_since_sunday = anchor.isoweekday() % 7
+    week_start = anchor - timedelta(days=days_since_sunday)
+    week_end = week_start + timedelta(days=6)
+
+    logger.info(f"[regen] week_anchor={week_anchor} → week_start={week_start} week_end={week_end}")
+
     sb = _get_supabase()
     queued = _fetch_queued_titles(sb, week_start, week_end)
     product_ids = [int(r["product_id"]) for r in queued]
+
+    logger.info(f"[regen] queued titles: {len(queued)}")
+
     presales = _fetch_presale_qtys(sb, product_ids) if product_ids else {}
     week_sales = _fetch_shopify_week_sales(week_start, week_end)
+
+    logger.info(f"[regen] shopify_sales products: {len(week_sales)} total_units: {sum(week_sales.values())}")
+
     metadata = _fetch_product_metadata(sb, product_ids) if product_ids else {}
     csv_text, csv_filename, row_count = _generate_csv(
         queued, presales, week_sales, metadata, week_end, sb
     )
 
-    now_utc = datetime.utcnow().isoformat() + "Z"
+    logger.info(f"[regen] csv rows: {row_count}")
 
-    # Upsert corrected log entry
+    now_utc = datetime.utcnow().isoformat() + "Z"
     supabase.schema("preorder").table("nyt_report_log").upsert(
         {
             "week_start": str(week_start),
