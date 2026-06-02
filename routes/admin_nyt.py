@@ -205,19 +205,12 @@ def mark_uploaded_manually(
     payload: MarkUploadedRequest,
     ok: bool = Depends(require_admin_token),
 ):
-    """
-    Manual fallback: marks titles as uploaded when the user has uploaded
-    the CSV to the portal themselves after a Playwright failure.
-    Also flips nyt_report_log to status='success' for the current week.
-    """
     if not payload.product_ids and not payload.week_anchor:
         raise HTTPException(status_code=422, detail="product_ids or week_anchor required")
 
     if payload.week_anchor:
         anchor = date.fromisoformat(payload.week_anchor)
-        days_since_sunday = anchor.weekday() + 1
-        if anchor.weekday() == 6:
-            days_since_sunday = 0
+        days_since_sunday = anchor.isoweekday() % 7
         week_start = anchor - timedelta(days=days_since_sunday)
         week_end   = week_start + timedelta(days=6)
     else:
@@ -225,18 +218,33 @@ def mark_uploaded_manually(
 
     now_iso = datetime.now(UTC).isoformat()
 
-    # Fetch effective_pub_date for each product so we can match release_state PK
-    pub_resp = (
-        supabase.schema("preorder")
-        .from_("release_state")
-        .select("product_id, effective_pub_date")
-        .in_("product_id", payload.product_ids)
-        .gte("release_report_week_start", str(week_start))
-        .execute()
-    )
+    # If no product_ids provided, fetch all queued titles for this week
+    product_ids = payload.product_ids
+    if not product_ids:
+        queued_resp = (
+            supabase.schema("preorder")
+            .from_("release_state")
+            .select("product_id, effective_pub_date")
+            .eq("released_to_reporting", True)
+            .is_("nyt_uploaded_at", "null")
+            .gte("release_report_week_start", str(week_start))
+            .lte("release_report_week_end", str(week_end))
+            .execute()
+        )
+        rows_to_mark = queued_resp.data or []
+    else:
+        pub_resp = (
+            supabase.schema("preorder")
+            .from_("release_state")
+            .select("product_id, effective_pub_date")
+            .in_("product_id", product_ids)
+            .gte("release_report_week_start", str(week_start))
+            .execute()
+        )
+        rows_to_mark = pub_resp.data or []
 
     updated = 0
-    for row in pub_resp.data or []:
+    for row in rows_to_mark:
         supabase.schema("preorder").from_("release_state").update(
             {"nyt_uploaded_at": now_iso}
         ).eq("product_id", row["product_id"]).eq(
@@ -244,10 +252,12 @@ def mark_uploaded_manually(
         ).execute()
         updated += 1
 
-    # Flip the log row to success if it's currently fallback
+    # Flip the log row to success
     supabase.schema("preorder").from_("nyt_report_log").update(
         {"upload_status": "success", "uploaded_at": now_iso}
-    ).eq("week_start", str(week_start)).eq("upload_status", "fallback").execute()
+    ).eq("week_start", str(week_start)).in_(
+        "upload_status", ["fallback", "error"]
+    ).execute()
 
     logger.info(f"Manual upload confirmed — {updated} titles marked for week {week_start}")
     return {
