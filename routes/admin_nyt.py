@@ -144,7 +144,7 @@ def get_nyt_log(
         .from_("nyt_report_log")
         .select(
             "id, week_start, week_end, csv_filename, titles_count, "
-            "upload_status, fallback_reason, notified_at, uploaded_at, created_at"
+            "upload_status, fallback_reason, notified_at, uploaded_at, created_at, screenshot_b64"
             # csv_content and screenshot_b64 intentionally excluded — large fields
         )
         .order("week_start", desc=True)

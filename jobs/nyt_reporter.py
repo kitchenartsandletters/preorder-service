@@ -340,6 +340,9 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
             try:
                 submit_btn.wait_for(state="detached", timeout=30_000)
                 log.info("Playwright: submit button detached — upload confirmed")
+                # Capture success screenshot
+                screenshot_b64 = base64.b64encode(page.screenshot()).decode()
+                log.info("Playwright: success screenshot captured")
             except Exception:
                 # Button didn't detach — take screenshot and check for error text
                 screenshot_b64 = base64.b64encode(page.screenshot()).decode()
@@ -357,7 +360,7 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
 
             context.close()
             browser.close()
-            return True, None, None
+            return True, None, screenshot_b64
 
     except Exception as exc:
         reason = str(exc)
@@ -480,6 +483,7 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         _write_log(
             sb, sales_start, sales_end, csv_filename, csv_text,
             titles_count=len(queued), upload_status="success", uploaded_at=now_iso,
+            screenshot_b64=screenshot_b64,
         )
         return {"uploaded": True, "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count}
 
