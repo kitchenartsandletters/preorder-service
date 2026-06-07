@@ -181,23 +181,27 @@ def trigger_nyt_reporter(
     ok: bool = Depends(require_admin_token),
 ):
     """
-    Trigger the nyt_reporter job immediately (runs in background).
-    Returns immediately — poll /nyt/log to see the result.
+    Trigger the nyt_reporter job immediately.
+    Runs synchronously — may take 30-60 seconds for full report.
+    Poll /nyt/log to see the result.
     """
-    async def _run():
-        try:
-            result = await run_reporter(dry_run=dry_run)
-            logger.info(f"nyt_reporter completed: {result}")
-        except Exception as exc:
-            logger.error(f"nyt_reporter failed: {exc}", exc_info=True)
+    import asyncio
 
-    asyncio.create_task(_run())
-
-    return {
-        "triggered": True,
-        "dry_run":   dry_run,
-        "message":   "Reporter job started. Poll /admin/preorders/nyt/log for results.",
-    }
+    try:
+        result = asyncio.run(run_reporter(dry_run=dry_run))
+        logger.info(f"nyt_reporter completed: {result}")
+        return {
+            "triggered": True,
+            "dry_run": dry_run,
+            "result": result,
+        }
+    except Exception as exc:
+        logger.error(f"nyt_reporter failed: {exc}", exc_info=True)
+        return {
+            "triggered": False,
+            "dry_run": dry_run,
+            "error": str(exc),
+        }
 
 
 @router.post("/nyt/mark-uploaded")
