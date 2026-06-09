@@ -58,12 +58,16 @@ def _detect_anomaly(
     # This requires human intervention to remove the product from the collection.
     if (
         _is_in_preorder_collection(product)
+        and _has_preorder_tag(product)
         and effective_pub_date is not None
         and effective_pub_date < date.today()
+        and product.override_date is None
+        and (not product.date_tags or product.pub_date == max(product.date_tags))
     ):
         return ClassificationResult(
             status="anomaly_stale_collection",
             anomaly_type="anomaly_stale_collection",
+            effective_pub_date=effective_pub_date,
         )
 
     # Phase 2.1: anomaly_missing_tag
@@ -79,7 +83,7 @@ def _detect_anomaly(
         _has_preorder_tag(product)
         and not _is_in_preorder_collection(product)
         and effective_pub_date is not None
-        and effective_pub_date > date.today()
+        and effective_pub_date >= date.today()
         and not product.has_inventory_arrival   # ← new field on ClassificationInput
     ):
         return ClassificationResult(
@@ -151,7 +155,7 @@ def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: da
     standard = (
         _is_structurally_preorder(product)
         and effective_pub_date is not None
-        and effective_pub_date > date.today()
+        and effective_pub_date >= date.today()
         and product.inventory > 0
     )
 
@@ -161,7 +165,7 @@ def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: da
         _has_preorder_tag(product)
         and not _is_in_preorder_collection(product)
         and effective_pub_date is not None
-        and effective_pub_date > date.today()
+        and effective_pub_date >= date.today()
         and product.has_inventory_arrival
         and product.inventory >= 0 
     )
@@ -173,7 +177,7 @@ def _is_active_preorder(product: ClassificationInput, effective_pub_date: date |
     return (
         _is_structurally_preorder(product)
         and effective_pub_date is not None
-        and effective_pub_date > date.today()
+        and effective_pub_date >= date.today()
         and product.inventory <= 0
     )
 

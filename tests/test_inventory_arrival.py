@@ -1,5 +1,3 @@
-
-
 from datetime import datetime, UTC
 import pytest
 
@@ -16,6 +14,7 @@ class FakeTable:
         self.store = store
         self.table_name = table_name
         self._filters = {}
+        self._insert_payload = None
 
     def select(self, *_):
         return self
@@ -36,7 +35,7 @@ class FakeTable:
             self.store[self.table_name] = []
 
         # Handle SELECT
-        if hasattr(self, "_filters") and self._filters:
+        if self._filters:
             product_id = self._filters.get("product_id")
             rows = [
                 r for r in self.store[self.table_name]
@@ -45,7 +44,7 @@ class FakeTable:
             return FakeResponse(rows)
 
         # Handle INSERT
-        if hasattr(self, "_insert_payload"):
+        if self._insert_payload is not None:
             self.store[self.table_name].append(self._insert_payload)
             return FakeResponse([self._insert_payload])
 
@@ -55,9 +54,15 @@ class FakeTable:
 class FakeSupabase:
     def __init__(self):
         self.store = {}
+        self._schema = None
+
+    def schema(self, name):
+        self._schema = name
+        return self
 
     def table(self, name):
-        return FakeTable(self.store, name)
+        key = f"{self._schema}.{name}" if self._schema else name
+        return FakeTable(self.store, key)
 
 
 # -----------------------
