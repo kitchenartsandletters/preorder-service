@@ -416,10 +416,22 @@ def get_late_arrivals(ok: bool = Depends(require_admin_token)):
         .execute()
     )
 
+    from datetime import datetime, timedelta
+
+    def _within_90_days(row):
+        pub = row.get("pub_date")
+        arrived = row.get("first_positive_inventory_at")
+        if not pub or not arrived:
+            return False
+        pub_dt = datetime.fromisoformat(pub)
+        arrived_dt = datetime.fromisoformat(arrived.replace("Z", "+00:00"))
+        return arrived_dt <= pub_dt + timedelta(days=90)
+
     results = [
         r for r in (resp.data or [])
         if r["product_id"] not in dismissed_ids
         and r.get("lifecycle_closed") == False      # ← filter in Python
+        and _within_90_days(r)                     # ← additional filter
     ]
     return results
 
