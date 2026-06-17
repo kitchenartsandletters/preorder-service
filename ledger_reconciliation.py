@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 import httpx
+from shopify_client import ShopifyClient, ShopifyGraphQLError
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,56 +27,6 @@ class ReconciliationRow:
     ledger_open_qty: int
     shopify_open_qty: int
     delta: int
-
-
-class ShopifyGraphQLError(Exception):
-    pass
-
-
-class ShopifyClient:
-    def __init__(self) -> None:
-        self.shop_url = os.environ["SHOP_URL"]
-        self.access_token = os.environ["SHOPIFY_ACCESS_TOKEN"]
-        self.api_version = os.environ.get("API_VERSION", "2025-10")
-        self.endpoint = f"https://{self.shop_url}/admin/api/{self.api_version}/graphql.json"
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=20.0),
-            headers={
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            },
-        )
-
-    async def close(self) -> None:
-        await self.client.aclose()
-
-    async def graphql(self, query: str, variables: dict | None = None):
-        MAX_RETRIES = 5
-
-        for attempt in range(MAX_RETRIES):
-            resp = await self.client.post(
-                self.endpoint,
-                json={"query": query, "variables": variables or {}},
-            )
-
-            data = resp.json()
-
-            # --- SUCCESS ---
-            if "errors" not in data:
-                return data["data"]
-
-            # --- THROTTLED ---
-            if any(e.get("extensions", {}).get("code") == "THROTTLED" for e in data["errors"]):
-                wait_time = min(2 ** attempt, 10)  # cap backoff
-                logger.warning(f"[THROTTLED] retrying in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-                continue
-
-            # --- OTHER ERROR ---
-            raise ShopifyGraphQLError(data["errors"])
-
-        raise Exception("Exceeded max Shopify retries")
-
 
 OPEN_ORDER_COMMITMENTS_QUERY = """
 query OpenOrderCommitmentsForProduct($cursor: String, $query: String!) {

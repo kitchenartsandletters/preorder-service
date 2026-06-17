@@ -72,8 +72,11 @@ def get_supabase() -> Client:
 
 
 def get_shopify_headers() -> Dict[str, str]:
+    from shopify_token import get_token_sync
+
+    token = get_token_sync()
+
     shop = os.environ["SHOP_URL"]
-    token = os.environ["SHOPIFY_ACCESS_TOKEN"]
     api_version = os.environ.get("API_VERSION", "2025-10")
     endpoint = f"https://{shop}/admin/api/{api_version}/graphql.json"
     return {

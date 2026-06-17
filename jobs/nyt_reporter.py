@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 from supabase import create_client, Client
 
 from jobs.mailtrap import send_email
+from shopify_token import get_token_sync
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +49,6 @@ NYT_PORTAL_URL            = os.getenv("NYT_PORTAL_URL", "https://bestsellers.nyt
 NYT_PORTAL_USERNAME       = os.environ["NYT_PORTAL_USERNAME"]
 NYT_PORTAL_PASSWORD       = os.environ["NYT_PORTAL_PASSWORD"]
 SHOPIFY_STORE             = os.environ["SHOP_URL"]
-SHOPIFY_ACCESS_TOKEN      = os.environ["SHOPIFY_ACCESS_TOKEN"]
 SHOPIFY_API_VERSION       = os.getenv("SHOPIFY_API_VERSION", "2025-01")
 
 
@@ -179,14 +179,12 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> Dict[int, int
             variables: Dict[str, Any] = {"q": query_str, "first": 250}
             if cursor:
                 variables["after"] = cursor
-            resp = client.post(
-                f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/graphql.json",
-                json={"query": QUERY, "variables": variables},
-                headers={
-                    "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-                    "Content-Type": "application/json"
-                },
-            )
+                token = get_token_sync()
+                resp = client.post(
+                    f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/graphql.json",
+                    json={"query": QUERY, "variables": variables},
+                    headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+                )
             resp.raise_for_status()
             data = resp.json()["data"]["orders"]
             for order in data["nodes"]:

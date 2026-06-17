@@ -7,6 +7,10 @@ Replaces: NYT_weekly_and_preorder_release / preorderOrderTagger.py
           + refreshPreorderProductIDs.py (reads Supabase directly instead)
 
 Entry point: called by jobs/run.py --job order_tagger
+
+Shopify access goes through the canonical async ShopifyClient (client
+credentials grant via shopify_token). This file no longer reads
+SHOPIFY_ACCESS_TOKEN or builds its own GraphQL URL.
 """
 
 from __future__ import annotations
@@ -16,19 +20,15 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
-import httpx
 from supabase import create_client, Client
+
+from shopify_client import ShopifyClient
 
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-SHOPIFY_STORE        = os.environ["SHOP_URL"]
-SHOPIFY_ACCESS_TOKEN = os.environ["SHOPIFY_ACCESS_TOKEN"]
-SUPABASE_URL         = os.environ["SUPABASE_URL"]
+# ── Config (Shopify auth/version handled inside ShopifyClient) ─────────────────
+SUPABASE_URL              = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-
-SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01")
-GRAPHQL_URL         = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
 
 TAG_PREORDER   = "preorder"
 TAG_MIXED      = "mixed"
@@ -67,31 +67,15 @@ mutation OrderUpdate($input: OrderInput!) {
 
 
 # ── Shopify helpers ───────────────────────────────────────────────────────────
-async def _shopify_gql(client: httpx.AsyncClient, query: str, variables: dict) -> dict:
-    resp = await client.post(
-        GRAPHQL_URL,
-        json={"query": query, "variables": variables},
-        headers={
-            "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-            "Content-Type": "application/json",
-        },
-    )
-    resp.raise_for_status()
-    body = resp.json()
-    if "errors" in body:
-        raise RuntimeError(f"GraphQL errors: {body['errors']}")
-    return body["data"]
-
-
 async def _tag_order(
-    client: httpx.AsyncClient,
+    sc: ShopifyClient,
     order_gid: str,
     existing_tags: list[str],
     new_tags: list[str],
 ) -> list[str]:
     merged = list(set(existing_tags) | set(new_tags))
-    data = await _shopify_gql(
-        client, ORDER_UPDATE_MUTATION, {"input": {"id": order_gid, "tags": merged}}
+    data = await sc.graphql(
+        ORDER_UPDATE_MUTATION, {"input": {"id": order_gid, "tags": merged}}
     )
     user_errors = data["orderUpdate"]["userErrors"]
     if user_errors:
@@ -175,7 +159,6 @@ def _record_processed_order(
 def _classify_order(order: dict, preorder_gids: set[str]) -> tuple[bool, bool]:
     """
     Returns (has_preorder, is_mixed).
-    Mirrors original preorderOrderTagger.py logic exactly:
     - Product GID match against active preorder set
     - _preorder custom attribute as safety net
     """
@@ -216,6 +199,7 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
     }
     errors: list[dict] = []
 
+    sc = ShopifyClient()
     try:
         preorder_gids  = _get_preorder_product_gids(sb)
         processed_gids = _get_processed_gids(sb)
@@ -229,68 +213,69 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         order_query = f"created_at:>={since} status:open"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            cursor = None
-            while True:
-                variables: dict = {"query": order_query, "first": PAGE_SIZE}
-                if cursor:
-                    variables["after"] = cursor
+        cursor = None
+        while True:
+            variables: dict = {"query": order_query, "first": PAGE_SIZE}
+            if cursor:
+                variables["after"] = cursor
 
-                data   = await _shopify_gql(client, ORDERS_QUERY, variables)
-                page   = data["orders"]
-                orders = page["nodes"]
-                stats["orders_fetched"] += len(orders)
-                log.info(f"Fetched page of {len(orders)} orders")
+            data   = await sc.graphql(ORDERS_QUERY, variables)
+            page   = data["orders"]
+            orders = page["nodes"]
+            stats["orders_fetched"] += len(orders)
+            log.info(f"Fetched page of {len(orders)} orders")
 
-                for order in orders:
-                    order_gid  = order["id"]
-                    order_name = order["name"]
+            for order in orders:
+                order_gid  = order["id"]
+                order_name = order["name"]
 
-                    if order_gid in processed_gids:
-                        stats["orders_skipped"] += 1
-                        continue
+                if order_gid in processed_gids:
+                    stats["orders_skipped"] += 1
+                    continue
 
-                    has_preorder, is_mixed = _classify_order(order, preorder_gids)
+                has_preorder, is_mixed = _classify_order(order, preorder_gids)
 
-                    if not has_preorder:
-                        continue
+                if not has_preorder:
+                    continue
 
-                    new_tags = [TAG_PREORDER]
+                new_tags = [TAG_PREORDER]
+                if is_mixed:
+                    new_tags.append(TAG_MIXED)
+
+                try:
+                    if not dry_run:
+                        await _tag_order(sc, order_gid, order["tags"], new_tags)
+                        _record_processed_order(sb, order_gid, order_name, new_tags, run_id)
+
+                    processed_gids.add(order_gid)
+                    stats["orders_tagged"] += 1
                     if is_mixed:
-                        new_tags.append(TAG_MIXED)
+                        stats["mixed_count"] += 1
+                    else:
+                        stats["preorder_count"] += 1
+                    log.info(
+                        f"{'[dry_run] Would tag' if dry_run else 'Tagged'} "
+                        f"{order_name} ({order_gid}) → {new_tags}"
+                    )
+                except Exception as exc:
+                    errors.append({
+                        "order_gid":  order_gid,
+                        "order_name": order_name,
+                        "error":      str(exc),
+                    })
+                    log.error(f"Failed to tag {order_name}: {exc}")
 
-                    try:
-                        if not dry_run:
-                            await _tag_order(client, order_gid, order["tags"], new_tags)
-                            _record_processed_order(sb, order_gid, order_name, new_tags, run_id)
-
-                        processed_gids.add(order_gid)
-                        stats["orders_tagged"] += 1
-                        if is_mixed:
-                            stats["mixed_count"] += 1
-                        else:
-                            stats["preorder_count"] += 1
-                        log.info(
-                            f"{'[dry_run] Would tag' if dry_run else 'Tagged'} "
-                            f"{order_name} ({order_gid}) → {new_tags}"
-                        )
-                    except Exception as exc:
-                        errors.append({
-                            "order_gid":  order_gid,
-                            "order_name": order_name,
-                            "error":      str(exc),
-                        })
-                        log.error(f"Failed to tag {order_name}: {exc}")
-
-                if not page["pageInfo"]["hasNextPage"]:
-                    break
-                cursor = page["pageInfo"]["endCursor"]
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            cursor = page["pageInfo"]["endCursor"]
 
     except Exception as exc:
         log.error(f"Fatal tagger error: {exc}", exc_info=True)
         errors.append({"error": str(exc), "fatal": True})
         _finish_run(sb, run_id, stats, errors, success=False)
         raise  # let run.py catch and set exit code 1
+    finally:
+        await sc.close()
 
     if not dry_run:
         _finish_run(sb, run_id, stats, errors, success=True)

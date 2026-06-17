@@ -519,9 +519,11 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int
     Uses currentQuantity so refunds reduce the count.
     Mirrors services/weekly_release_engine.py fetch_in_week_sales logic.
     """
+
+    from shopify_token import get_token_sync
     shop = os.getenv("SHOP_URL")
-    token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-    api_version = os.getenv("API_VERSION", "2025-10")
+    token = get_token_sync()
+    api_version = os.getenv("SHOPIFY_API_VERSION", "2025-10")
     endpoint = f"https://{shop}/admin/api/{api_version}/graphql.json"
     headers = {
         "Content-Type": "application/json",

@@ -27,6 +27,8 @@ import requests
 from supabase import Client, create_client
 from dotenv import load_dotenv
 
+from shopify_token import get_token_sync
+
 # Load environment variables from .env in project root
 load_dotenv()
 
@@ -66,8 +68,9 @@ def get_supabase() -> Client:
 
 def get_shopify_config() -> Dict[str, object]:
     shop = os.environ["SHOP_URL"]
-    token = os.environ["SHOPIFY_ACCESS_TOKEN"]
-    api_version = os.environ.get("API_VERSION", "2025-10")
+    from shopify_token import get_token_sync
+    token = get_token_sync()
+    api_version = os.environ.get("SHOPIFY_API_VERSION", "2025-10")
     endpoint = f"https://{shop}/admin/api/{api_version}/graphql.json"
     return {
         "endpoint": endpoint,
