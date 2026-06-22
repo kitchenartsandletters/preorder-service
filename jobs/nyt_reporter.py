@@ -175,32 +175,33 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> Dict[int, int
     cursor = None
 
     with httpx.Client(timeout=60.0) as client:
-        while True:
-            variables: Dict[str, Any] = {"q": query_str, "first": 250}
-            if cursor:
-                variables["after"] = cursor
+            while True:
+                variables: Dict[str, Any] = {"q": query_str, "first": 250}
+                if cursor:
+                    variables["after"] = cursor
+
                 token = get_token_sync()
                 resp = client.post(
                     f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/graphql.json",
                     json={"query": QUERY, "variables": variables},
                     headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
                 )
-            resp.raise_for_status()
-            data = resp.json()["data"]["orders"]
-            for order in data["nodes"]:
-                for item in order["lineItems"]["nodes"]:
-                    product = item.get("product") or {}
-                    gid = product.get("id", "")
-                    if not gid:
-                        continue
-                    try:
-                        pid = int(gid.split("/")[-1])
-                    except ValueError:
-                        continue
-                    sales[pid] = sales.get(pid, 0) + int(item.get("currentQuantity") or 0)
-            if not data["pageInfo"]["hasNextPage"]:
-                break
-            cursor = data["pageInfo"]["endCursor"]
+                resp.raise_for_status()
+                data = resp.json()["data"]["orders"]
+                for order in data["nodes"]:
+                    for item in order["lineItems"]["nodes"]:
+                        product = item.get("product") or {}
+                        gid = product.get("id", "")
+                        if not gid:
+                            continue
+                        try:
+                            pid = int(gid.split("/")[-1])
+                        except ValueError:
+                            continue
+                        sales[pid] = sales.get(pid, 0) + int(item.get("currentQuantity") or 0)
+                if not data["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = data["pageInfo"]["endCursor"]
 
     return sales
 
