@@ -91,14 +91,19 @@ def _already_uploaded(sb: Client, week_start: date) -> bool:
 # ── Data fetching ─────────────────────────────────────────────────────────────
 
 def _fetch_queued_titles(sb: Client, week_start: date, week_end: date) -> List[Dict]:
+    """
+    Fetch all titles queued for reporting that have not yet been uploaded.
+    week_start/week_end retained as parameters for API compatibility but
+    no longer used as filters — all unreported queued titles are included
+    regardless of which week they were staged in.
+    """
     result = (
         sb.schema("preorder")
         .from_("release_state")
         .select("product_id, effective_pub_date")
         .eq("released_to_reporting", True)
         .is_("nyt_uploaded_at", "null")
-        .gte("release_report_week_start", str(week_start))
-        .lte("release_report_week_end",   str(week_end))
+        .order("release_report_week_start", desc=False)
         .execute()
     )
     return result.data or []
