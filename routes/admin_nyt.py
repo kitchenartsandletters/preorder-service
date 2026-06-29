@@ -97,8 +97,7 @@ def get_nyt_queue(ok: bool = Depends(require_admin_token)):
         .select("product_id, effective_pub_date, released_at, release_report_week_start, release_report_week_end")
         .eq("released_to_reporting", True)
         .is_("nyt_uploaded_at", "null")
-        .gte("release_report_week_start", str(week_start))
-        .lte("release_report_week_end",   str(week_end))
+        .order("release_report_week_start", desc=False)
         .execute()
     )
     queued = queue_resp.data or []
