@@ -257,7 +257,12 @@ async def create_profile_from_template(
         variables={"profile": profile_input},
     )
 
-    payload = result.get("deliveryProfileCreate", {})
+    logger.info(f"[create_profile] raw result type={type(result)} value={result}")
+
+    if result is None:
+        raise ValueError("deliveryProfileCreate returned None from graphql client")
+
+    payload = result.get("deliveryProfileCreate") or {}
     errors = payload.get("userErrors", [])
     if errors:
         logger.error(f"Failed to create profile '{name}': {errors}")
@@ -265,7 +270,7 @@ async def create_profile_from_template(
 
     created = payload.get("profile")
     if not created:
-        raise ValueError(f"deliveryProfileCreate returned no profile for '{name}'")
+        raise ValueError(f"deliveryProfileCreate returned no profile for '{name}' — payload={payload}")
 
     logger.info(f"Created new delivery profile '{name}' ({created['id']})")
     return {
