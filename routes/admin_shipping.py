@@ -174,7 +174,7 @@ async def assign_to_profile(
     client = ShopifyClient()
     try:
         # Find or create profile for this date
-        profile = await find_or_create_profile_for_date(client, parsed_date)
+        profile = await find_or_create_profile_for_date(client, parsed_date, product_id, variant_gid=request.variant_gid)
 
         # Assign product
         errors = await assign_product_to_profile(client, profile["profile_gid"], product_id, variant_gid=request.variant_gid,)

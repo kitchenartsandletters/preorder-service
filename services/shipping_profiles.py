@@ -31,6 +31,23 @@ logger = logging.getLogger(__name__)
 
 LOCATION_GID = "gid://shopify/Location/40052293765"  # Kitchen Arts & Letters, Inc.
 
+
+# ──────────────────────────────────────────────
+# Carrier services (store-level constants)
+# These IDs are stable across all delivery profiles in this store.
+# Verified from existing date-based profile structure.
+# ──────────────────────────────────────────────
+
+CARRIER_UPS = "gid://shopify/DeliveryCarrierService/33373421701"
+CARRIER_USPS = "gid://shopify/DeliveryCarrierService/33373356165"
+CARRIER_DHL_ECOMMERCE = "gid://shopify/DeliveryCarrierService/57607979141"
+CARRIER_DHL_EXPRESS = "gid://shopify/DeliveryCarrierService/33373388933"
+
+# US zone: UPS + USPS
+# World zone: UPS + USPS + DHL eCommerce + DHL Express
+US_ZONE_CARRIERS = [CARRIER_UPS, CARRIER_USPS]
+WORLD_ZONE_CARRIERS = [CARRIER_UPS, CARRIER_USPS, CARRIER_DHL_ECOMMERCE, CARRIER_DHL_EXPRESS]
+
 # ──────────────────────────────────────────────
 # Date ↔ Profile Name
 # ──────────────────────────────────────────────
@@ -156,6 +173,109 @@ mutation deliveryProfileUpdate($id: ID!, $profile: DeliveryProfileInput!) {
   }
 }
 """
+
+CREATE_PROFILE_MUTATION = """
+mutation deliveryProfileCreate($profile: DeliveryProfileInput!) {
+  deliveryProfileCreate(profile: $profile) {
+    profile {
+      id
+      name
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+
+def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]:
+    """
+    Build the DeliveryProfileInput that replicates the standard date-based
+    profile structure: one location group with a US zone (UPS + USPS) and a
+    World zone (UPS + USPS + DHL eCommerce + DHL Express), all carrier-calculated.
+
+    The carrier service IDs are store-level constants, so every profile created
+    through this path is structurally identical to existing date profiles.
+    """
+
+    def _participant_method(carrier_gid: str) -> Dict[str, Any]:
+        return {
+            "participant": {
+                "carrierServiceId": carrier_gid,
+            }
+        }
+
+    return {
+        "name": name,
+        "variantsToAssociate": [variant_gid],
+        "locationGroupsToCreate": [
+            {
+                "locations": [LOCATION_GID],
+                "zonesToCreate": [
+                    {
+                        "name": "US",
+                        "countries": [
+                            {"code": "US"},
+                        ],
+                        "methodDefinitionsToCreate": [
+                            _participant_method(c) for c in US_ZONE_CARRIERS
+                        ],
+                    },
+                    {
+                        "name": "World",
+                        "countries": [
+                            {"restOfWorld": True},
+                        ],
+                        "methodDefinitionsToCreate": [
+                            _participant_method(c) for c in WORLD_ZONE_CARRIERS
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+
+async def create_profile_from_template(
+    client: Any,
+    name: str,
+    variant_gid: str,
+) -> Dict[str, Any]:
+    """
+    Create a new delivery profile replicating the standard date-based structure,
+    with the given product variant already associated.
+
+    Returns the created profile dict (profile_gid, name).
+    Raises ValueError on userErrors.
+    """
+    profile_input = _build_profile_template_input(name, variant_gid)
+
+    result = await client.graphql(
+        query=CREATE_PROFILE_MUTATION,
+        variables={"profile": profile_input},
+    )
+
+    payload = result.get("deliveryProfileCreate", {})
+    errors = payload.get("userErrors", [])
+    if errors:
+        logger.error(f"Failed to create profile '{name}': {errors}")
+        raise ValueError(f"deliveryProfileCreate failed: {errors}")
+
+    created = payload.get("profile")
+    if not created:
+        raise ValueError(f"deliveryProfileCreate returned no profile for '{name}'")
+
+    logger.info(f"Created new delivery profile '{name}' ({created['id']})")
+    return {
+        "profile_gid": created["id"],
+        "profile_id": _extract_product_id(created["id"]),
+        "name": created["name"],
+        "pub_date": None,  # caller sets this
+        "product_count": 1,
+        "products": [],
+    }
 
 # ──────────────────────────────────────────────
 # Data types
@@ -363,6 +483,8 @@ async def rename_profile(
 async def find_or_create_profile_for_date(
     client: Any,
     pub_date: date,
+    product_id: int,
+    variant_gid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Find an existing profile for the given pub date, or repurpose an empty
@@ -413,9 +535,10 @@ async def find_or_create_profile_for_date(
         chosen["pub_date"] = pub_date.isoformat()
         return chosen
 
-    # 3. No empty profiles available
-    raise ValueError(
-        f"No delivery profile found for '{target_name}' and no empty historical "
-        f"profiles available to repurpose. Please create a new profile manually "
-        f"in Shopify admin, or free up an empty profile."
-    )
+    # 3. No empty profiles available — create a new one from template
+        logger.info(f"No empty profile available — creating new profile '{target_name}'")
+        if not variant_gid:
+            variant_gid = await get_variant_gid_for_product(client, product_id)
+        created = await create_profile_from_template(client, target_name, variant_gid)
+        created["pub_date"] = pub_date.isoformat()
+        return created
