@@ -192,20 +192,14 @@ mutation deliveryProfileCreate($profile: DeliveryProfileInput!) {
 
 def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]:
     logger.info(f"[build_input] name={name!r} variant_gid={variant_gid!r}")
-    """
-    Build the DeliveryProfileInput that replicates the standard date-based
-    profile structure: one location group with a US zone (UPS + USPS) and a
-    World zone (UPS + USPS + DHL eCommerce + DHL Express), all carrier-calculated.
 
-    The carrier service IDs are store-level constants, so every profile created
-    through this path is structurally identical to existing date profiles.
-    """
-
-    def _participant_method(carrier_gid: str) -> Dict[str, Any]:
+    def _participant_method(carrier_gid: str, method_name: str) -> Dict[str, Any]:
         return {
+            "name": method_name,
+            "active": True,
             "participant": {
                 "carrierServiceId": carrier_gid,
-            }
+            },
         }
 
     return {
@@ -217,20 +211,20 @@ def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]
                 "zonesToCreate": [
                     {
                         "name": "US",
-                        "countries": [
-                            {"code": "US"},
-                        ],
+                        "countries": [{"code": "US"}],
                         "methodDefinitionsToCreate": [
-                            _participant_method(c) for c in US_ZONE_CARRIERS
+                            _participant_method(CARRIER_UPS, "ups_shipping"),
+                            _participant_method(CARRIER_USPS, "usps"),
                         ],
                     },
                     {
                         "name": "World",
-                        "countries": [
-                            {"restOfWorld": True},
-                        ],
+                        "countries": [{"restOfWorld": True}],
                         "methodDefinitionsToCreate": [
-                            _participant_method(c) for c in WORLD_ZONE_CARRIERS
+                            _participant_method(CARRIER_UPS, "ups_shipping"),
+                            _participant_method(CARRIER_USPS, "usps"),
+                            _participant_method(CARRIER_DHL_ECOMMERCE, "dhl_ecommerce"),
+                            _participant_method(CARRIER_DHL_EXPRESS, "dhl_express"),
                         ],
                     },
                 ],
