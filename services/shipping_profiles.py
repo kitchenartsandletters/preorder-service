@@ -541,9 +541,10 @@ async def find_or_create_profile_for_date(
         return chosen
 
     # 3. No empty profiles available — create a new one from template
-        logger.info(f"No empty profile available — creating new profile '{target_name}'")
-        if not variant_gid:
-            variant_gid = await get_variant_gid_for_product(client, product_id)
-        created = await create_profile_from_template(client, target_name, variant_gid)
-        created["pub_date"] = pub_date.isoformat()
-        return created
+    logger.info(f"[find_or_create] reached step 3 create for '{target_name}' product={product_id}")
+    if not variant_gid:
+        variant_gid = await get_variant_gid_for_product(client, product_id)
+    logger.info(f"[find_or_create] variant_gid={variant_gid}")
+    created = await create_profile_from_template(client, target_name, variant_gid)
+    created["pub_date"] = pub_date.isoformat()
+    return created
