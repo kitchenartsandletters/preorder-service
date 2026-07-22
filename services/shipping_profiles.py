@@ -191,6 +191,7 @@ mutation deliveryProfileCreate($profile: DeliveryProfileInput!) {
 
 
 def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]:
+    logger.info(f"[build_input] name={name!r} variant_gid={variant_gid!r}")
     """
     Build the DeliveryProfileInput that replicates the standard date-based
     profile structure: one location group with a US zone (UPS + USPS) and a
