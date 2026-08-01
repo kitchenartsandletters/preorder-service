@@ -191,6 +191,16 @@ mutation deliveryProfileCreate($profile: DeliveryProfileInput!) {
 
 
 def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]:
+    """
+    Build the DeliveryProfileInput replicating the canonical date-based profile:
+    one location group with a US zone (UPS + USPS) and a World zone
+    (UPS + USPS + DHL eCommerce + DHL Express), all carrier-calculated.
+
+    US zone uses includeAllProvinces=True. Shopify requires the US country in a
+    delivery zone to have provinces associated; includeAllProvinces is the
+    intended mechanism and avoids enumerating all 63 state/territory codes.
+    The World zone uses restOfWorld and needs no provinces.
+    """
     logger.info(f"[build_input] name={name!r} variant_gid={variant_gid!r}")
 
     def _participant_method(carrier_gid: str, method_name: str) -> Dict[str, Any]:
@@ -211,7 +221,12 @@ def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]
                 "zonesToCreate": [
                     {
                         "name": "US",
-                        "countries": [{"code": "US"}],
+                        "countries": [
+                            {
+                                "code": "US",
+                                "includeAllProvinces": True,
+                            }
+                        ],
                         "methodDefinitionsToCreate": [
                             _participant_method(CARRIER_UPS, "ups_shipping"),
                             _participant_method(CARRIER_USPS, "usps"),
@@ -487,15 +502,15 @@ async def find_or_create_profile_for_date(
     variant_gid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Find an existing profile for the given pub date, or repurpose an empty
-    historical profile by renaming it.
+    Find an existing profile for the given pub date, repurpose an empty
+    historical profile, or create a new one from template.
 
     Strategy:
     1. Look for a profile named exactly "Month Day, Year" for the pub date.
     2. If not found, look for any non-default empty profile (0 products)
-       whose name parses as a past date.
-    3. Rename that empty profile to the new pub date name.
-    4. If no empty profiles available, raise an error (manual creation needed).
+       whose name parses as a past date, and rename it to the pub date name.
+    3. If no empty profiles available, create a new profile from template
+       with the canonical US + World zone structure.
 
     Returns the profile dict.
     """
