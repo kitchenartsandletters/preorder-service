@@ -30,8 +30,8 @@ Shopify GraphQL. New profiles must replicate it exactly.
 - **Location group:** single location
   `gid://shopify/Location/40052293765` (Kitchen Arts & Letters)
 - **Zones:** two
-  - **US** — country `US` (with full province list, see below); methods
-    `ups_shipping`, `usps`
+  - **US** — country `US` with `includeAllProvinces: true` (see below);
+    methods `ups_shipping`, `usps`
   - **World** — `restOfWorld: true`; methods `ups_shipping`, `usps`,
     `dhl_ecommerce`, `dhl_express`
 - **Rates:** all `DeliveryParticipant` (carrier-calculated), referencing
@@ -51,31 +51,29 @@ reference them directly rather than reading them from a template profile.
 
 ### US province requirement
 
-Shopify requires the US country in a shipping zone to enumerate its provinces
-explicitly — creating a US zone with only `{"code": "US"}` fails with:
+Shopify requires the US country in a shipping zone to have provinces
+associated — creating a US zone with only `{"code": "US"}` fails with:
 
 > Cannot save zone. Country: 'United States' must have at least one province
 > associated.
 
-The US zone country input must therefore be
-`{"code": "US", "provinces": [{"code": "AL"}, ...]}`. The World zone
-(`restOfWorld: true`) needs no provinces.
+The fix is to set `includeAllProvinces: true` on the US country input. This
+tells Shopify to cover every US province without listing any:
 
-Canonical province set (63 entries — 50 states + DC + territories + armed
-forces + Pacific affiliated states), pulled from a live date profile and
-kept in `services/shipping_profiles.py` as `US_PROVINCE_CODES`:
-
-```
-AL, AK, AS, AZ, AR, AA, AE, AP, CA, CO, CT, DE, DC, FM, FL, GA, GU, HI, ID,
-IL, IN, IA, KS, KY, LA, ME, MH, MD, MA, MI, MN, MS, MO, MT, NE, NV, NH, NJ,
-NM, NY, NC, ND, MP, OH, OK, OR, PW, PA, PR, RI, SC, SD, TN, TX, UT, VT, VI,
-VA, WA, WV, WI, WY
+```json
+{"code": "US", "includeAllProvinces": true}
 ```
 
-Breakdown: `AS` American Samoa, `GU` Guam, `MP` Northern Mariana Islands,
-`PR` Puerto Rico, `VI` Virgin Islands (territories); `AA`/`AE`/`AP` armed
-forces; `FM` Micronesia, `MH` Marshall Islands, `PW` Palau (Pacific affiliated
-states); `DC` District of Columbia.
+This is the intended mechanism, confirmed via `DeliveryCountryInput`
+introspection. It is what `_build_profile_template_input` emits today. The
+World zone (`restOfWorld: true`) needs no provinces.
+
+> **Superseded approach.** An earlier fix enumerated all 63 province codes
+> (50 states + DC + territories + armed forces + Pacific affiliated states) in
+> a `provinces: [{"code": "AL"}, ...]` array, held in a `US_PROVINCE_CODES`
+> constant. That satisfied Shopify but was brittle and verbose;
+> `includeAllProvinces: true` replaces it. There is no longer a province-code
+> list in `services/shipping_profiles.py`.
 
 ### Participant services (Path A)
 
