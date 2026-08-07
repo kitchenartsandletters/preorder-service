@@ -40,6 +40,31 @@ def _is_structurally_preorder(product: ClassificationInput) -> bool:
     return _has_preorder_tag(product) or _is_in_preorder_collection(product)
 
 
+def _is_delayed_import(product: ClassificationInput, effective_pub_date: date | None) -> bool:
+    """
+    A delayed import is a title whose pub date has passed but whose stock has
+    never physically arrived (no inventory_arrival record) and which still has
+    open preorder commitments (inventory <= 0). Books imported from overseas can
+    sit in transit past their nominal pub date; customers have ordered and are
+    waiting, so the title is legitimately still an active preorder.
+
+    This case must NOT be treated as anomaly_stale_collection (which implies the
+    book released and someone forgot to remove it from the collection) and must
+    NOT transition to historical_preorder (which implies the book released).
+
+    Signal: structurally preorder + still in collection + past pub date
+            + no inventory arrival + inventory <= 0.
+    """
+    return (
+        _is_structurally_preorder(product)
+        and _is_in_preorder_collection(product)
+        and effective_pub_date is not None
+        and effective_pub_date < date.today()
+        and not product.has_inventory_arrival
+        and product.inventory <= 0
+    )
+
+
 def _detect_anomaly(
     product: ClassificationInput,
     effective_pub_date: date | None,
@@ -55,10 +80,16 @@ def _detect_anomaly(
     # A product whose pub date has passed but is still in the Preorder collection.
     # The preorder tag is intentionally retained on historical titles as a marker,
     # so tag presence alone is not the signal — collection membership is.
-    # This requires human intervention to remove the product from the collection.
+    #
+    # This only fires when stock actually arrived (has_inventory_arrival). A past-pub
+    # title still in the collection with NO arrival record is a delayed import — the
+    # book is in transit and legitimately still a preorder — not a collection-cleanup
+    # oversight. That case is handled as active_preorder via _is_delayed_import, so we
+    # require has_inventory_arrival here to avoid mislabeling delayed imports.
     if (
         _is_in_preorder_collection(product)
         and _has_preorder_tag(product)
+        and product.has_inventory_arrival
         and effective_pub_date is not None
         and effective_pub_date < date.today()
         and product.override_date is None
@@ -174,12 +205,20 @@ def _is_early_stock_arrival(product: ClassificationInput, effective_pub_date: da
 
 
 def _is_active_preorder(product: ClassificationInput, effective_pub_date: date | None) -> bool:
-    return (
+    # Standard path: structurally preorder, future-dated, no stock yet.
+    standard = (
         _is_structurally_preorder(product)
         and effective_pub_date is not None
         and effective_pub_date >= date.today()
         and product.inventory <= 0
     )
+
+    # Delayed-import path: pub date passed but stock never arrived and commitments
+    # remain open. The title stays an active preorder until stock physically lands
+    # (at which point inventory_arrival fires and it transitions to historical).
+    delayed_import = _is_delayed_import(product, effective_pub_date)
+
+    return standard or delayed_import
 
 
 def _is_historical_preorder(product: ClassificationInput, effective_pub_date: date | None) -> bool:
