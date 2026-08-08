@@ -10,7 +10,9 @@ Endpoints:
   GET  /shipping/profiles                           — List all profiles with products
   GET  /shipping/profiles/{profile_id}              — Get profile detail
   GET  /shipping/profiles/by-date/{pub_date}        — Find profile matching a pub date
+  GET  /shipping/profiles/reference-preview         — Preview participant config the builder would clone (read-only)
   POST /shipping/profiles/assign/{product_id}       — Assign product to date-matched profile
+  POST /shipping/profiles/create-direct             — Create a profile directly from the reference template (bypasses pipeline)
   POST /shipping/profiles/remove/{product_id}       — Remove product from its profile
   POST /shipping/profiles/reconcile                 — Reconcile all active preorders with profiles
 """
@@ -39,6 +41,8 @@ from services.shipping_profiles import (
     assign_product_to_profile,
     remove_product_from_profile,
     pub_date_to_profile_name,
+    create_profile_from_template,
+    preview_reference_clone,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +77,12 @@ def require_admin_token(x_admin_token: str = Header(default="")):
 class AssignRequest(BaseModel):
     pub_date: str  # YYYY-MM-DD
     variant_gid: Optional[str] = None  # If not provided, assigns all variants of the product
+
+
+class CreateProfileRequest(BaseModel):
+    name: str
+    variant_gid: str
+    reference_gid: Optional[str] = None  # override; defaults to SHIPPING_REFERENCE_PROFILE_GID
 
 
 # ──────────────────────────────────────────────
@@ -133,6 +143,53 @@ async def get_profile_by_date(pub_date: str, ok: bool = Depends(require_admin_to
         }
     except Exception as e:
         logger.error(f"Failed to find profile for date {pub_date}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.get("/shipping/profiles/reference-preview")
+async def reference_preview(ok: bool = Depends(require_admin_token)):
+    """
+    Read-only preview of the carrier participant config that
+    create_profile_from_template would clone from SHIPPING_REFERENCE_PROFILE_GID.
+
+    Creates nothing. Doubles as a pre-flight check: if the reference is unset,
+    missing, or has an unserviced carrier, this returns 400 (the same guard the
+    create path enforces) instead of a clone. Declared before the
+    /{profile_id} route so the static path is not parsed as an id.
+    """
+    client = ShopifyClient()
+    try:
+        preview = await preview_reference_clone(client)
+        zones = preview["zones"]
+        would_clone = {
+            zone: [
+                {
+                    "method": m["name"],
+                    "carrier": m["participant"]["carrierServiceId"],
+                    "active_services": [
+                        s["name"]
+                        for s in m["participant"].get("participantServices", [])
+                        if s.get("active")
+                    ],
+                    "fixed_fee": m["participant"].get("fixedFee"),
+                    "percentage_of_rate_fee": m["participant"].get("percentageOfRateFee"),
+                    "adapt_to_new_services": m["participant"].get("adaptToNewServicesFlag", False),
+                }
+                for m in methods
+            ]
+            for zone, methods in zones.items()
+        }
+        return {
+            "reference_profile_gid": preview["reference_profile_gid"],
+            "would_clone": would_clone,
+            "raw_zone_methods": zones,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to preview reference clone: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.close()
@@ -200,6 +257,47 @@ async def assign_to_profile(
         raise
     except Exception as e:
         logger.error(f"Failed to assign product {product_id} to profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.post("/shipping/profiles/create-direct")
+async def create_profile_direct(
+    request: CreateProfileRequest,
+    ok: bool = Depends(require_admin_token),
+):
+    """
+    Create a delivery profile directly from the reference template, attaching
+    the given variant. Bypasses the preorder pipeline (no pub-date / find-or-
+    create logic) — used to provision a profile by hand and to verify the
+    builder in isolation with a throwaway product's variant. Carrier participant
+    config is cloned from SHIPPING_REFERENCE_PROFILE_GID (or the request
+    override). Raises 400 if the reference is unset or would clone an unserviced
+    carrier — nothing is created in that case.
+    """
+    if not request.name or not request.variant_gid:
+        raise HTTPException(status_code=400, detail="name and variant_gid are required")
+
+    client = ShopifyClient()
+    try:
+        created = await create_profile_from_template(
+            client,
+            request.name,
+            request.variant_gid,
+            reference_gid=request.reference_gid,
+        )
+        return {
+            "action": "created",
+            "profile": created,
+            "message": f"Created profile '{created['name']}' ({created['profile_gid']}).",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create profile directly: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.close()
