@@ -123,10 +123,14 @@ def test_transform_clones_services_and_fees():
     assert ups["participant"]["fixedFee"] == {"amount": "1.00", "currencyCode": "USD"}
 
 
-def test_transform_preserves_adapt_flag():
+def test_transform_omits_unwritable_adapt_flag():
     zm = _reference_zone_methods_from_payload(REFERENCE_PAYLOAD)
     dhl = next(m for m in zm["World"] if m["participant"]["carrierServiceId"] == CARRIER_DHL_ECOMMERCE)
-    assert dhl["participant"].get("adaptToNewServicesFlag") is True
+    # Never write adaptToNewServicesFlag (Shopify rejects it on input)...
+    assert "adaptToNewServicesFlag" not in dhl["participant"]
+    # ...but the explicit active services are still cloned.
+    assert [s["name"] for s in dhl["participant"]["participantServices"]] == [
+        "DHL eCommerce Parcel Direct", "DHL eCommerce Parcel Standard"]
 
 
 def test_clone_refuses_unserviced_participant():
@@ -139,10 +143,16 @@ def test_clone_refuses_unserviced_participant():
     assert raised, "expected _clone_participant to raise on an unserviced participant"
 
 
-def test_clone_allows_adapt_only():
-    ok = _part(CARRIER_DHL_EXPRESS, [], active=False, adapt=True)
-    participant = _clone_participant(ok)
-    assert participant["adaptToNewServicesFlag"] is True
+def test_clone_refuses_adapt_only():
+    # adaptToNewServicesFlag isn't writable, so a participant with no explicit
+    # active service can't be cloned — must refuse rather than create an empty one.
+    adapt_only = _part(CARRIER_DHL_EXPRESS, [], active=False, adapt=True)
+    raised = False
+    try:
+        _clone_participant(adapt_only)
+    except ValueError:
+        raised = True
+    assert raised, "expected refusal of an auto-adopt-only participant"
 
 
 def test_build_input_geography_and_methods():
