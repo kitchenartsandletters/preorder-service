@@ -505,6 +505,31 @@ async def create_profile_from_template(
         "products": [],
     }
 
+
+async def preview_reference_clone(
+    client: Any,
+    reference_gid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Read-only preview of what create_profile_from_template would clone.
+
+    Resolves the reference GID (arg or SHIPPING_REFERENCE_PROFILE_GID), fetches
+    the reference profile, and returns the exact US/World method inputs that
+    would be written into a new profile — creating nothing. Raises the same way
+    the create path would if the reference is missing or unserviced, so this
+    doubles as a pre-flight check on the reference configuration.
+    """
+    reference_gid = reference_gid or os.getenv(REFERENCE_PROFILE_GID_ENV)
+    if not reference_gid:
+        raise ValueError(
+            f"{REFERENCE_PROFILE_GID_ENV} is not set — nothing to preview."
+        )
+    zone_methods = await _fetch_reference_zone_methods(client, reference_gid)
+    return {
+        "reference_profile_gid": reference_gid,
+        "zones": zone_methods,
+    }
+
+
 # ──────────────────────────────────────────────
 # Data types
 # ──────────────────────────────────────────────
