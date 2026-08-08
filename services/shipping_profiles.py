@@ -17,13 +17,14 @@ Operations:
 - Create a new profile from template (cloning zone structure)
 
 Create-from-template clones the carrier participant configuration
-(participantServices / fees / adaptToNewServicesFlag) from a known-good
-reference profile at create time, rather than emitting bare participants.
-Bare participants — a carrier referenced with no active service — return no
-rate at checkout and silently break shipping. The builder now refuses to
-create any carrier method that has no active service (and no
-adaptToNewServicesFlag), so an empty or misconfigured reference raises
-instead of minting an unserviced profile.
+(participantServices and fees) from a known-good reference profile at create
+time, rather than emitting bare participants. Bare participants — a carrier
+referenced with no active service — return no rate at checkout and silently
+break shipping. The builder refuses to clone any carrier method that has no
+active service, so an empty or misconfigured reference raises instead of
+minting an unserviced profile. (adaptToNewServicesFlag is read-only on the
+Shopify object and not accepted on DeliveryParticipantInput, so it is never
+written.)
 """
 
 from __future__ import annotations
@@ -293,10 +294,11 @@ def _zone_key(zone: Dict[str, Any]) -> Optional[str]:
 def _clone_participant(rate_provider: Dict[str, Any]) -> Dict[str, Any]:
     """Build a DeliveryParticipantInput from a reference DeliveryParticipant.
 
-    Refuses (raises) if the reference participant has no active service and no
-    adaptToNewServicesFlag — that is exactly the empty-participant state that
-    returns no rate at checkout, and must never be propagated into a new
-    profile.
+    Refuses (raises) if the reference participant has no active service — that
+    is the empty-participant state that returns no rate at checkout and must
+    never be propagated into a new profile. adaptToNewServicesFlag is not
+    writable on DeliveryParticipantInput, so it is never emitted and auto-adopt-
+    only participants (no explicit active service) are refused.
     """
     carrier = rate_provider.get("carrierService") or {}
     carrier_id = carrier.get("id")
@@ -309,21 +311,23 @@ def _clone_participant(rate_provider: Dict[str, Any]) -> Dict[str, Any]:
         if s.get("name")
     ]
     has_active_service = any(s["active"] for s in services)
-    adapt = bool(rate_provider.get("adaptToNewServicesFlag"))
 
-    if not has_active_service and not adapt:
+    # adaptToNewServicesFlag exists only on the read-side DeliveryParticipant
+    # object; DeliveryParticipantInput (and DeliveryMethodDefinitionInput) reject
+    # it on write (Shopify INVALID_VARIABLE). We therefore never write it. A
+    # participant relying solely on auto-adopt (no explicit active service) can't
+    # be cloned without producing an unserviced, no-rate participant — refuse it.
+    if not has_active_service:
         raise ValueError(
             f"Reference participant for carrier {carrier_id} has no active service "
-            f"and adaptToNewServicesFlag is off — refusing to clone an unserviced "
-            f"participant (this is the empty-profile bug)."
+            f"— refusing to clone an unserviced participant. adaptToNewServicesFlag "
+            f"is not writable, so auto-adopt-only participants can't be cloned."
         )
 
     participant: Dict[str, Any] = {
         "carrierServiceId": carrier_id,
         "participantServices": services,
     }
-    if adapt:
-        participant["adaptToNewServicesFlag"] = True
 
     fee = rate_provider.get("fixedFee") or {}
     if _fee_amount_is_positive(fee.get("amount")):
@@ -513,7 +517,6 @@ async def create_profile_from_template(
         "product_count": 1,
         "products": [],
     }
-
 
 async def preview_reference_clone(
     client: Any,
