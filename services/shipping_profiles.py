@@ -15,11 +15,21 @@ Operations:
 - Remove product variant from a profile (dissociate)
 - Rename an empty profile for reuse
 - Create a new profile from template (cloning zone structure)
+
+Create-from-template clones the carrier participant configuration
+(participantServices / fees / adaptToNewServicesFlag) from a known-good
+reference profile at create time, rather than emitting bare participants.
+Bare participants — a carrier referenced with no active service — return no
+rate at checkout and silently break shipping. The builder now refuses to
+create any carrier method that has no active service (and no
+adaptToNewServicesFlag), so an empty or misconfigured reference raises
+instead of minting an unserviced profile.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -31,11 +41,19 @@ logger = logging.getLogger(__name__)
 
 LOCATION_GID = "gid://shopify/Location/40052293765"  # Kitchen Arts & Letters, Inc.
 
+# The reference profile whose carrier participant config (services/fees/flags)
+# new date profiles are cloned from. Must be a known-good, fully-serviced
+# profile with US + World zones (e.g. the General profile, or a blessed date
+# profile). Set in the environment; the create path raises if it is unset.
+REFERENCE_PROFILE_GID_ENV = "SHIPPING_REFERENCE_PROFILE_GID"
+
 
 # ──────────────────────────────────────────────
 # Carrier services (store-level constants)
 # These IDs are stable across all delivery profiles in this store.
 # Verified from existing date-based profile structure.
+# Informational since the builder clones participants from the reference
+# profile; retained for documentation and any external callers.
 # ──────────────────────────────────────────────
 
 CARRIER_UPS = "gid://shopify/DeliveryCarrierService/33373421701"
@@ -43,8 +61,6 @@ CARRIER_USPS = "gid://shopify/DeliveryCarrierService/33373356165"
 CARRIER_DHL_ECOMMERCE = "gid://shopify/DeliveryCarrierService/57607979141"
 CARRIER_DHL_EXPRESS = "gid://shopify/DeliveryCarrierService/33373388933"
 
-# US zone: UPS + USPS
-# World zone: UPS + USPS + DHL eCommerce + DHL Express
 US_ZONE_CARRIERS = [CARRIER_UPS, CARRIER_USPS]
 WORLD_ZONE_CARRIERS = [CARRIER_UPS, CARRIER_USPS, CARRIER_DHL_ECOMMERCE, CARRIER_DHL_EXPRESS]
 
@@ -142,6 +158,52 @@ query DeliveryProfileDetail($id: ID!) {
 }
 """
 
+# Full zone/method/participant structure of a reference profile — the source
+# of truth for cloning carrier participant config into new profiles.
+REFERENCE_PROFILE_QUERY = """
+query ReferenceProfileStructure($id: ID!) {
+  deliveryProfile(id: $id) {
+    id
+    name
+    profileLocationGroups {
+      locationGroupZones(first: 20) {
+        edges {
+          node {
+            zone {
+              name
+              countries {
+                code {
+                  countryCode
+                  restOfWorld
+                }
+              }
+            }
+            methodDefinitions(first: 30) {
+              edges {
+                node {
+                  name
+                  active
+                  rateProvider {
+                    __typename
+                    ... on DeliveryParticipant {
+                      carrierService { id }
+                      participantServices { name active }
+                      fixedFee { amount currencyCode }
+                      percentageOfRateFee
+                      adaptToNewServicesFlag
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 PRODUCT_VARIANT_QUERY = """
 query ProductVariant($id: ID!) {
   product(id: $id) {
@@ -190,27 +252,145 @@ mutation deliveryProfileCreate($profile: DeliveryProfileInput!) {
 """
 
 
-def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]:
+# ──────────────────────────────────────────────
+# Reference participant cloning
+# ──────────────────────────────────────────────
+
+def _fee_amount_is_positive(amount: Any) -> bool:
+    try:
+        return float(amount) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _zone_key(zone: Dict[str, Any]) -> Optional[str]:
+    """Classify a reference zone as 'US' or 'World' by its countries.
+
+    Keyed off country codes (not the zone's display name) so it is robust to
+    naming like 'United States' vs 'US' or 'Rest of the World'.
+    """
+    countries = zone.get("countries") or []
+    for c in countries:
+        code = c.get("code") or {}
+        if code.get("restOfWorld"):
+            return "World"
+    for c in countries:
+        code = c.get("code") or {}
+        if code.get("countryCode") == "US":
+            return "US"
+    return None
+
+
+def _clone_participant(rate_provider: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a DeliveryParticipantInput from a reference DeliveryParticipant.
+
+    Refuses (raises) if the reference participant has no active service and no
+    adaptToNewServicesFlag — that is exactly the empty-participant state that
+    returns no rate at checkout, and must never be propagated into a new
+    profile.
+    """
+    carrier = rate_provider.get("carrierService") or {}
+    carrier_id = carrier.get("id")
+    if not carrier_id:
+        raise ValueError("Reference participant has no carrierService id")
+
+    services = [
+        {"name": s.get("name"), "active": bool(s.get("active"))}
+        for s in (rate_provider.get("participantServices") or [])
+        if s.get("name")
+    ]
+    has_active_service = any(s["active"] for s in services)
+    adapt = bool(rate_provider.get("adaptToNewServicesFlag"))
+
+    if not has_active_service and not adapt:
+        raise ValueError(
+            f"Reference participant for carrier {carrier_id} has no active service "
+            f"and adaptToNewServicesFlag is off — refusing to clone an unserviced "
+            f"participant (this is the empty-profile bug)."
+        )
+
+    participant: Dict[str, Any] = {
+        "carrierServiceId": carrier_id,
+        "participantServices": services,
+    }
+    if adapt:
+        participant["adaptToNewServicesFlag"] = True
+
+    fee = rate_provider.get("fixedFee") or {}
+    if _fee_amount_is_positive(fee.get("amount")):
+        participant["fixedFee"] = {
+            "amount": fee["amount"],
+            "currencyCode": fee.get("currencyCode", "USD"),
+        }
+
+    pct = rate_provider.get("percentageOfRateFee")
+    try:
+        if pct is not None and float(pct) > 0:
+            participant["percentageOfRateFee"] = pct
+    except (TypeError, ValueError):
+        pass
+
+    return participant
+
+
+def _reference_zone_methods_from_payload(profile: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    """Transform a reference deliveryProfile payload into cloned method-definition
+    inputs, keyed by zone ('US' / 'World'). Only carrier-participant methods are
+    cloned; flat DeliveryRateDefinition methods are skipped.
+    """
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for lg in (profile.get("profileLocationGroups") or []):
+        zone_edges = ((lg.get("locationGroupZones") or {}).get("edges")) or []
+        for z_edge in zone_edges:
+            znode = z_edge.get("node") or {}
+            key = _zone_key(znode.get("zone") or {})
+            if key not in ("US", "World"):
+                continue
+            method_edges = ((znode.get("methodDefinitions") or {}).get("edges")) or []
+            for m_edge in method_edges:
+                m = m_edge.get("node") or {}
+                rp = m.get("rateProvider") or {}
+                if rp.get("__typename") != "DeliveryParticipant":
+                    continue
+                participant = _clone_participant(rp)
+                result.setdefault(key, []).append({
+                    "name": m.get("name") or "shipping",
+                    "active": bool(m.get("active", True)),
+                    "participant": participant,
+                })
+    return result
+
+
+def _build_profile_template_input(
+    name: str,
+    variant_gid: str,
+    reference_zone_methods: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any]:
     """
     Build the DeliveryProfileInput replicating the canonical date-based profile:
-    one location group with a US zone (UPS + USPS) and a World zone
-    (UPS + USPS + DHL eCommerce + DHL Express), all carrier-calculated.
+    one location group with a US zone and a World zone, all carrier-calculated.
 
-    US zone uses includeAllProvinces=True. Shopify requires the US country in a
-    delivery zone to have provinces associated; includeAllProvinces is the
-    intended mechanism and avoids enumerating all 63 state/territory codes.
-    The World zone uses restOfWorld and needs no provinces.
+    Zone geography is fixed on the proven path: the US zone uses
+    includeAllProvinces=True (Shopify requires the US country to have provinces;
+    this is the intended mechanism and avoids enumerating 63 codes), and the
+    World zone uses restOfWorld. The carrier methods (participant services /
+    fees / flags) are cloned from the reference profile via
+    reference_zone_methods.
     """
     logger.info(f"[build_input] name={name!r} variant_gid={variant_gid!r}")
 
-    def _participant_method(carrier_gid: str, method_name: str) -> Dict[str, Any]:
-        return {
-            "name": method_name,
-            "active": True,
-            "participant": {
-                "carrierServiceId": carrier_gid,
-            },
-        }
+    us_methods = reference_zone_methods.get("US")
+    world_methods = reference_zone_methods.get("World")
+    if not us_methods:
+        raise ValueError(
+            "No US-zone carrier methods cloned from reference profile — "
+            "refusing to create an unserviced US zone."
+        )
+    if not world_methods:
+        raise ValueError(
+            "No World-zone carrier methods cloned from reference profile — "
+            "refusing to create an unserviced World zone."
+        )
 
     return {
         "name": name,
@@ -227,20 +407,12 @@ def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]
                                 "includeAllProvinces": True,
                             }
                         ],
-                        "methodDefinitionsToCreate": [
-                            _participant_method(CARRIER_UPS, "ups_shipping"),
-                            _participant_method(CARRIER_USPS, "usps"),
-                        ],
+                        "methodDefinitionsToCreate": us_methods,
                     },
                     {
                         "name": "World",
                         "countries": [{"restOfWorld": True}],
-                        "methodDefinitionsToCreate": [
-                            _participant_method(CARRIER_UPS, "ups_shipping"),
-                            _participant_method(CARRIER_USPS, "usps"),
-                            _participant_method(CARRIER_DHL_ECOMMERCE, "dhl_ecommerce"),
-                            _participant_method(CARRIER_DHL_EXPRESS, "dhl_express"),
-                        ],
+                        "methodDefinitionsToCreate": world_methods,
                     },
                 ],
             }
@@ -248,19 +420,60 @@ def _build_profile_template_input(name: str, variant_gid: str) -> Dict[str, Any]
     }
 
 
+async def _fetch_reference_zone_methods(
+    client: Any,
+    reference_gid: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Read the reference profile and return cloned US + World method inputs.
+
+    Raises if the reference is missing or does not yield serviced US and World
+    zones — so a bad reference blocks creation rather than producing an empty
+    profile.
+    """
+    result = await client.graphql(
+        query=REFERENCE_PROFILE_QUERY,
+        variables={"id": reference_gid},
+    )
+    profile = (result or {}).get("deliveryProfile")
+    if not profile:
+        raise ValueError(f"Reference delivery profile not found: {reference_gid}")
+
+    zone_methods = _reference_zone_methods_from_payload(profile)
+    if not zone_methods.get("US") or not zone_methods.get("World"):
+        raise ValueError(
+            f"Reference profile {reference_gid} did not yield serviced US and "
+            f"World zones (got zones: {sorted(zone_methods)}). Refusing to clone."
+        )
+    logger.info(
+        f"[reference] cloned {len(zone_methods['US'])} US + "
+        f"{len(zone_methods['World'])} World methods from {reference_gid}"
+    )
+    return zone_methods
+
+
 async def create_profile_from_template(
     client: Any,
     name: str,
     variant_gid: str,
+    reference_gid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new delivery profile replicating the standard date-based structure,
-    with the given product variant already associated.
+    with the given product variant already associated. Carrier participant
+    config is cloned from the reference profile.
 
     Returns the created profile dict (profile_gid, name).
-    Raises ValueError on userErrors.
+    Raises ValueError on userErrors, missing reference, or an unserviced clone.
     """
-    profile_input = _build_profile_template_input(name, variant_gid)
+    reference_gid = reference_gid or os.getenv(REFERENCE_PROFILE_GID_ENV)
+    if not reference_gid:
+        raise ValueError(
+            f"{REFERENCE_PROFILE_GID_ENV} is not set — cannot clone carrier "
+            f"participant config for new profile '{name}'."
+        )
+
+    zone_methods = await _fetch_reference_zone_methods(client, reference_gid)
+    profile_input = _build_profile_template_input(name, variant_gid, zone_methods)
 
     result = await client.graphql(
         query=CREATE_PROFILE_MUTATION,
