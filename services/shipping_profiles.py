@@ -266,18 +266,27 @@ def _fee_amount_is_positive(amount: Any) -> bool:
 def _zone_key(zone: Dict[str, Any]) -> Optional[str]:
     """Classify a reference zone as 'US' or 'World' by its countries.
 
-    Keyed off country codes (not the zone's display name) so it is robust to
-    naming like 'United States' vs 'US' or 'Rest of the World'.
+    'US'    = any zone that includes the United States.
+    'World' = the catch-all international zone, whether it uses Shopify's
+              restOfWorld flag OR an explicit enumerated country list. This
+              store's 'Rest of the World' zone lists ~188 countries rather than
+              using the flag, so keying on the flag alone missed it.
+
+    Keyed off countries (not the zone's display name) so it is robust to naming.
     """
     countries = zone.get("countries") or []
-    for c in countries:
-        code = c.get("code") or {}
-        if code.get("restOfWorld"):
-            return "World"
+    has_us = False
+    has_intl = False  # restOfWorld flag or any non-US country
     for c in countries:
         code = c.get("code") or {}
         if code.get("countryCode") == "US":
-            return "US"
+            has_us = True
+        elif code.get("restOfWorld") or code.get("countryCode"):
+            has_intl = True
+    if has_us:
+        return "US"
+    if has_intl:
+        return "World"
     return None
 
 
