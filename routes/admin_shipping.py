@@ -14,6 +14,8 @@ Endpoints:
   POST /shipping/profiles/assign/{product_id}       — Assign product to date-matched profile
   POST /shipping/profiles/create-direct             — Create a profile directly from the reference template (bypasses pipeline)
   POST /shipping/profiles/remove/{product_id}       — Remove product from its profile
+  GET  /shipping/profiles/week-plan                 — Read-only week-grouping plan (Phase 2 preview)
+  POST /shipping/profiles/week-apply                — Apply the week plan for one release week
   POST /shipping/profiles/reconcile                 — Reconcile all active preorders with profiles
 """
 
@@ -44,6 +46,7 @@ from services.shipping_profiles import (
     create_profile_from_template,
     preview_reference_clone,
 )
+from services.week_migration import build_week_plan, apply_week_plan
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,10 @@ class CreateProfileRequest(BaseModel):
     name: str
     variant_gid: str
     reference_gid: Optional[str] = None  # override; defaults to SHIPPING_REFERENCE_PROFILE_GID
+
+
+class WeekApplyRequest(BaseModel):
+    week_start: str  # YYYY-MM-DD, must be a Sunday
 
 
 # ──────────────────────────────────────────────
@@ -195,6 +202,26 @@ async def reference_preview(ok: bool = Depends(require_admin_token)):
         await client.close()
 
 
+@router.get("/shipping/profiles/week-plan")
+async def week_plan(ok: bool = Depends(require_admin_token)):
+    """
+    Read-only Phase 2 preview: the week-based grouping plan for active
+    preorders — which week profiles are needed, which titles move where, which
+    per-date profiles would empty out. Creates nothing. Declared before the
+    /{profile_id} route so the static path is not parsed as an id.
+    """
+    client = ShopifyClient()
+    try:
+        return await build_week_plan(client, supabase)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to build week plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.close()
+
+
 @router.get("/shipping/profiles/{profile_id}")
 async def get_profile(profile_id: int, ok: bool = Depends(require_admin_token)):
     """Get detailed information about a specific delivery profile."""
@@ -298,6 +325,36 @@ async def create_profile_direct(
         raise
     except Exception as e:
         logger.error(f"Failed to create profile directly: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.post("/shipping/profiles/week-apply")
+async def week_apply(request: WeekApplyRequest, ok: bool = Depends(require_admin_token)):
+    """
+    Apply the week plan for a SINGLE release week (week_start = a Sunday,
+    YYYY-MM-DD). Ensures the week profile exists (created on the verified
+    builder if needed) and assigns every title in that week to it. Preflights
+    the reference clone before any create. Scoped to one week so the caller can
+    rate-check before applying more.
+    """
+    try:
+        ws = datetime.strptime(request.week_start, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid week_start. Use YYYY-MM-DD (a Sunday).")
+    if ws.isoweekday() != 7:
+        raise HTTPException(status_code=400, detail=f"week_start must be a Sunday; {request.week_start} is not.")
+
+    client = ShopifyClient()
+    try:
+        return await apply_week_plan(client, supabase, ws)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to apply week plan for {request.week_start}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.close()
