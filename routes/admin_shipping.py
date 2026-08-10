@@ -12,6 +12,7 @@ Endpoints:
   GET  /shipping/profiles/by-date/{pub_date}        — Find profile matching a pub date
   GET  /shipping/profiles/reference-preview         — Preview participant config the builder would clone (read-only)
   POST /shipping/profiles/assign/{product_id}       — Assign product to date-matched profile
+  POST /shipping/profiles/week-assign/{product_id}  — Assign one product to its release-week profile
   POST /shipping/profiles/create-direct             — Create a profile directly from the reference template (bypasses pipeline)
   POST /shipping/profiles/remove/{product_id}       — Remove product from its profile
   GET  /shipping/profiles/week-plan                 — Read-only week-grouping plan (Phase 2 preview)
@@ -48,6 +49,7 @@ from services.shipping_profiles import (
 )
 from services.week_migration import build_week_plan, apply_week_plan
 from services.week_reconcile import build_week_reconcile
+from services.week_profiles import find_or_create_profile_for_week
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +287,57 @@ async def assign_to_profile(
         raise
     except Exception as e:
         logger.error(f"Failed to assign product {product_id} to profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.post("/shipping/profiles/week-assign/{product_id}")
+async def week_assign_to_profile(
+    product_id: int,
+    request: AssignRequest,
+    ok: bool = Depends(require_admin_token),
+):
+    """
+    Assign a single product to the delivery profile for its release WEEK
+    (Sun-Sat), creating that week profile on the verified builder if needed and
+    recording the week->profile mapping. The per-title counterpart to
+    week-apply (which does a whole week at once). Body: {pub_date, variant_gid?}.
+    """
+    try:
+        parsed_date = datetime.strptime(request.pub_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    client = ShopifyClient()
+    try:
+        profile = await find_or_create_profile_for_week(
+            client, supabase, parsed_date, product_id, variant_gid=request.variant_gid
+        )
+        errors = await assign_product_to_profile(
+            client, profile["profile_gid"], product_id, variant_gid=request.variant_gid
+        )
+        if errors:
+            raise HTTPException(status_code=500, detail={
+                "message": "Failed to assign product to week profile",
+                "errors": errors,
+            })
+        return {
+            "product_id": product_id,
+            "action": "assigned",
+            "profile_name": profile["name"],
+            "profile_gid": profile["profile_gid"],
+            "week_start": profile.get("week_start"),
+            "week_end": profile.get("week_end"),
+            "pub_date": request.pub_date,
+            "message": f"Product {product_id} assigned to '{profile['name']}'.",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to week-assign product {product_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.close()
