@@ -47,6 +47,7 @@ from services.shipping_profiles import (
     preview_reference_clone,
 )
 from services.week_migration import build_week_plan, apply_week_plan
+from services.week_reconcile import build_week_reconcile
 
 logger = logging.getLogger(__name__)
 
@@ -419,133 +420,17 @@ async def remove_from_profile(product_id: int, ok: bool = Depends(require_admin_
 @router.post("/shipping/profiles/reconcile")
 async def reconcile_profiles(ok: bool = Depends(require_admin_token)):
     """
-    Reconcile all active preorder products with their expected shipping profiles.
-    
-    For each active/early_stock preorder product with a pub_date:
-    - Check if the product is on the correct date-based profile
-    - Report mismatches (wrong profile, missing from profile, should be on General)
-    - Early stock arrivals with inventory > 0 are marked as exempt
-    
-    Does NOT make changes — returns a report of what needs fixing.
+    Reconcile active preorders against their WEEK profiles (week-aware).
+
+    Same six buckets as before, but "correct" now means the title sits on the
+    delivery profile mapped to its Sun-Sat release week (mapping table first,
+    name second). Titles still on an old per-date profile show as wrong_profile
+    -- under the week model that's the migration to-do list. Adds a `migration`
+    progress block. Read-only; makes no changes.
     """
     client = ShopifyClient()
     try:
-        # Get all profiles
-        profiles = await list_shipping_profiles(client)
-
-        # Build product → profile lookup
-        product_profile_map: Dict[int, Dict] = {}
-        for profile in profiles:
-            if profile["is_default"]:
-                continue
-            for prod in profile["products"]:
-                if prod["product_id"]:
-                    product_profile_map[prod["product_id"]] = {
-                        "profile_name": profile["name"],
-                        "profile_gid": profile["profile_gid"],
-                        "profile_pub_date": profile["pub_date"],
-                    }
-
-        # Get active preorder products from Supabase — include title and inventory
-        response = (
-            supabase.schema("preorder")
-            .table("product_status")
-            .select("product_id, status, effective_pub_date, metadata_snapshot")
-            .in_("status", ["active_preorder", "early_stock_arrival"])
-            .execute()
-        )
-
-        today = date.today()
-        report = {
-            "correctly_assigned": [],
-            "wrong_profile": [],
-            "missing_from_profile": [],
-            "should_be_removed": [],
-            "exempt": [],
-            "no_pub_date": [],
-        }
-
-        for row in response.data:
-            pid = row["product_id"]
-            status = row["status"]
-            pub_date_str = row.get("effective_pub_date")
-            meta = row.get("metadata_snapshot") or {}
-            title = meta.get("title", f"Product {pid}")
-            inventory = int(meta.get("inventory", 0))
-
-            if not pub_date_str:
-                report["no_pub_date"].append({
-                    "product_id": pid,
-                    "title": title,
-                    "status": status,
-                })
-                continue
-
-            pub_date = datetime.strptime(pub_date_str, "%Y-%m-%d").date()
-            expected_profile_name = pub_date_to_profile_name(pub_date)
-            current = product_profile_map.get(pid)
-
-            # Early stock arrivals with inventory on hand are exempt
-            # from shipping profile requirements — they're fulfillable now
-            if status == "early_stock_arrival" and inventory > 0:
-                report["exempt"].append({
-                    "product_id": pid,
-                    "title": title,
-                    "pub_date": pub_date_str,
-                    "status": status,
-                    "inventory": inventory,
-                    "current_profile": current["profile_name"] if current else "General",
-                    "reason": "Early stock on hand — fulfillable without date-based profile",
-                })
-                continue
-
-            if pub_date <= today:
-                # Past pub date — should NOT be on a date profile
-                if current:
-                    report["should_be_removed"].append({
-                        "product_id": pid,
-                        "title": title,
-                        "pub_date": pub_date_str,
-                        "current_profile": current["profile_name"],
-                    })
-                # else: correctly on General, no action needed
-            else:
-                # Future pub date — should be on matching date profile
-                if not current:
-                    report["missing_from_profile"].append({
-                        "product_id": pid,
-                        "title": title,
-                        "pub_date": pub_date_str,
-                        "expected_profile": expected_profile_name,
-                    })
-                elif current["profile_name"] != expected_profile_name:
-                    report["wrong_profile"].append({
-                        "product_id": pid,
-                        "title": title,
-                        "pub_date": pub_date_str,
-                        "expected_profile": expected_profile_name,
-                        "current_profile": current["profile_name"],
-                    })
-                else:
-                    report["correctly_assigned"].append({
-                        "product_id": pid,
-                        "title": title,
-                        "pub_date": pub_date_str,
-                        "profile": expected_profile_name,
-                    })
-
-        return {
-            "summary": {
-                "correctly_assigned": len(report["correctly_assigned"]),
-                "wrong_profile": len(report["wrong_profile"]),
-                "missing_from_profile": len(report["missing_from_profile"]),
-                "should_be_removed": len(report["should_be_removed"]),
-                "exempt": len(report["exempt"]),
-                "no_pub_date": len(report["no_pub_date"]),
-            },
-            "report": report,
-        }
-
+        return await build_week_reconcile(client, supabase)
     except Exception as e:
         logger.error(f"Failed to reconcile shipping profiles: {e}")
         raise HTTPException(status_code=500, detail=str(e))
