@@ -45,7 +45,8 @@ def _compute_week_plan(
     """
     Compute the week-based grouping plan.
 
-    preorders: [{product_id, status, pub_date: date|None, title, inventory}]
+    preorders: [{product_id, status, pub_date: date|None, title, inventory,
+        arrival_record_is_live, first_positive_inventory_at}]
     product_profile_map: {product_id: {"profile_name", "profile_gid"}} (current,
         non-default assignments only)
     non_default_profiles: [{"profile_gid","name","products":[{product_id,...}]}]
@@ -78,6 +79,12 @@ def _compute_week_plan(
                 "inventory": inv,
                 "current_profile": current["profile_name"] if current else "General",
             })
+            continue
+        # An active preorder that has physically arrived (live inventory_arrival
+        # record) is fulfillable now and slated to be detached from its shipping
+        # profile — exclude it from week grouping so week-apply never (re)attaches
+        # it. The week-aware reconcile surfaces it for detach.
+        if status == "active_preorder" and po.get("arrival_record_is_live"):
             continue
         if pub <= today:
             if current:
@@ -168,6 +175,37 @@ def _compute_week_plan(
 # Fetch + orchestrate
 # ──────────────────────────────────────────────
 
+def _fetch_arrival_flags(supabase: Any) -> Dict[int, Dict[str, Any]]:
+    """
+    Map product_id -> {arrival_record_is_live, first_positive_inventory_at} for
+    titles with a live inventory_arrival record, from preorder.vw_preorder_products.
+
+    The live-arrival flag is set broadly across the catalog (backlist included),
+    so callers must scope it (e.g. to active_preorder). Degrades gracefully: if
+    the view can't be read, returns {} so reconcile/plan still work — just
+    without the arrived-detach signal.
+    """
+    try:
+        resp = (
+            supabase.schema(SCHEMA)
+            .table("vw_preorder_products")
+            .select("product_id, arrival_record_is_live, first_positive_inventory_at")
+            .eq("arrival_record_is_live", True)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        return {
+            r["product_id"]: {
+                "arrival_record_is_live": r.get("arrival_record_is_live"),
+                "first_positive_inventory_at": r.get("first_positive_inventory_at"),
+            }
+            for r in rows
+        }
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[arrival_flags] could not read vw_preorder_products: {e}")
+        return {}
+
+
 def _fetch_active_preorders(supabase: Any) -> List[Dict[str, Any]]:
     resp = (
         supabase.schema(SCHEMA)
@@ -177,16 +215,26 @@ def _fetch_active_preorders(supabase: Any) -> List[Dict[str, Any]]:
         .execute()
     )
     rows = getattr(resp, "data", None) or []
+
+    # Enrich with the live-arrival signal. A live inventory_arrival record means
+    # the title is physically in stock / fulfillable now, even if its pub date is
+    # still future.
+    arrival = _fetch_arrival_flags(supabase)
+
     out = []
     for r in rows:
         pub_str = r.get("effective_pub_date")
         meta = r.get("metadata_snapshot") or {}
+        pid = r["product_id"]
+        a = arrival.get(pid, {})
         out.append({
-            "product_id": r["product_id"],
+            "product_id": pid,
             "status": r.get("status"),
             "pub_date": date.fromisoformat(pub_str) if pub_str else None,
             "title": meta.get("title"),
             "inventory": meta.get("inventory", 0),
+            "arrival_record_is_live": bool(a.get("arrival_record_is_live")),
+            "first_positive_inventory_at": a.get("first_positive_inventory_at"),
         })
     return out
 
