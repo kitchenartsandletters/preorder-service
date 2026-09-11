@@ -18,7 +18,7 @@ DATE_OCT7 = "gid://shopify/DeliveryProfile/OCT7"
 DATE_JUL1 = "gid://shopify/DeliveryProfile/JUL1"
 WEEK_NOV1 = "gid://shopify/DeliveryProfile/WEEKNOV1"
 
-NAME_WEEK_NOV1 = "Week of Nov 1\u20137, 2026"
+NAME_WEEK_NOV1 = "Week of Nov 1–7, 2026"
 
 
 def _scenario_plan():
@@ -56,7 +56,7 @@ def test_plan_groups_by_week():
     weeks = {w["week_start"]: w for w in plan["weeks"]}
     assert set(weeks) == {"2026-10-04", "2026-10-18", "2026-11-01"}
     oct4 = weeks["2026-10-04"]
-    assert oct4["profile_name"] == "Week of Oct 4\u201310, 2026"
+    assert oct4["profile_name"] == "Week of Oct 4–10, 2026"
     assert oct4["profile_status"] == "create" and oct4["profile_gid"] is None
     acts = {t["product_id"]: t["action"] for t in oct4["titles"]}
     assert acts == {1: "move", 2: "move"}
@@ -104,7 +104,7 @@ def test_plan_summary():
 
 def test_plan_adopt_by_name_when_unmapped():
     preorders = [{"product_id": 10, "status": "active_preorder", "pub_date": date(2026, 10, 21), "title": "B", "inventory": 0}]
-    name = "Week of Oct 18\u201324, 2026"
+    name = "Week of Oct 18–24, 2026"
     prof = {"profile_gid": "gid://shopify/DeliveryProfile/WEEKOCT18", "name": name, "products": []}
     plan = wm._compute_week_plan(
         preorders, {}, [prof], {}, {name: prof}, TODAY,
@@ -138,7 +138,7 @@ def test_apply_single_week_creates_and_assigns():
 
     plan = {"weeks": [{
         "week_start": "2026-10-04", "week_end": "2026-10-10",
-        "profile_name": "Week of Oct 4\u201310, 2026",
+        "profile_name": "Week of Oct 4–10, 2026",
         "profile_status": "create", "profile_gid": None,
         "titles": [
             {"product_id": 1, "title": "Book1", "pub_date": "2026-10-06", "current_profile": "October 6, 2026", "action": "move"},
@@ -155,7 +155,7 @@ def test_apply_single_week_creates_and_assigns():
 
     async def fake_resolve(client, sb, pub_date, product_id, variant_gid=None):
         calls["resolved"] = (pub_date.isoformat(), product_id)
-        return {"profile_gid": "gid://shopify/DeliveryProfile/NEW", "name": "Week of Oct 4\u201310, 2026"}
+        return {"profile_gid": "gid://shopify/DeliveryProfile/NEW", "name": "Week of Oct 4–10, 2026"}
 
     async def fake_assign(client, profile_gid, product_id, variant_gid=None):
         calls["assigned"].append((profile_gid, product_id))
