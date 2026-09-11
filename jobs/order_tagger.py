@@ -36,6 +36,13 @@ TAGGER_VERSION = "1.0.0"
 LOOKBACK_DAYS  = 30
 PAGE_SIZE      = 50
 
+# PostgREST caps a single .select() response (default 1000 rows). The
+# processed-orders table grows unbounded, so the skip-set must be loaded in
+# pages or already-processed orders beyond the cap look "new" every run — they
+# get needlessly re-tagged and then collide on the order_gid unique constraint,
+# surfacing as spurious 23505 errors.
+_PROCESSED_PAGE = 1000
+
 # ── GraphQL documents ─────────────────────────────────────────────────────────
 ORDERS_QUERY = """
 query FetchOrders($query: String!, $first: Int!, $after: String) {
@@ -104,13 +111,27 @@ def _get_preorder_product_gids(sb: Client) -> set[str]:
 
 
 def _get_processed_gids(sb: Client) -> set[str]:
-    rows = (
-        sb.schema("preorder")
-        .from_("tagger_processed_orders")
-        .select("order_gid")
-        .execute()
-    )
-    return {r["order_gid"] for r in rows.data}
+    """
+    Load the full set of already-processed order GIDs, paginating past the
+    PostgREST row cap. Without pagination only the first page loads, so orders
+    beyond it are re-tagged every run and then fail the unique constraint.
+    """
+    processed: set[str] = set()
+    offset = 0
+    while True:
+        rows = (
+            sb.schema("preorder")
+            .from_("tagger_processed_orders")
+            .select("order_gid")
+            .range(offset, offset + _PROCESSED_PAGE - 1)
+            .execute()
+        )
+        batch = rows.data or []
+        processed.update(r["order_gid"] for r in batch)
+        if len(batch) < _PROCESSED_PAGE:
+            break
+        offset += _PROCESSED_PAGE
+    return processed
 
 
 def _create_run(sb: Client) -> str:
@@ -146,13 +167,29 @@ def _finish_run(sb: Client, run_id: str, stats: dict, errors: list, success: boo
 
 def _record_processed_order(
     sb: Client, order_gid: str, order_name: str, tags: list[str], run_id: str
-):
-    sb.schema("preorder").from_("tagger_processed_orders").insert({
-        "order_gid":   order_gid,
-        "order_name":  order_name,
-        "tags_applied": tags,
-        "run_id":      run_id,
-    }).execute()
+) -> bool:
+    """
+    Insert a processed-order row. Conflict-safe: if the order_gid already exists
+    (idempotency guard, or a race), this is a silent no-op rather than a raised
+    23505 that pollutes the run's error log. Returns True if a row was inserted,
+    False if it already existed.
+    """
+    result = (
+        sb.schema("preorder")
+        .from_("tagger_processed_orders")
+        .upsert(
+            {
+                "order_gid":    order_gid,
+                "order_name":   order_name,
+                "tags_applied": tags,
+                "run_id":       run_id,
+            },
+            on_conflict="order_gid",
+            ignore_duplicates=True,
+        )
+        .execute()
+    )
+    return bool(result.data)
 
 
 # ── Classification logic ──────────────────────────────────────────────────────
