@@ -392,7 +392,11 @@ def mark_reported(
 def get_late_arrivals(ok: bool = Depends(require_admin_token)):
     """
     Returns historical preorder titles with verified late inventory arrival
-    and open lifecycle snapshots. Excludes dismissed alerts.
+    and open lifecycle snapshots, arrived within 90 days of pub date.
+    Excludes dismissed alerts.
+
+    Must stay in sync with vw_preorder_metrics.late_arrivals_unresolved so the
+    dashboard count and this list agree.
     """
     # Get dismissed product IDs for late_arrival alerts
     dismissed_resp = (
@@ -404,7 +408,7 @@ def get_late_arrivals(ok: bool = Depends(require_admin_token)):
         .execute()
     )
     dismissed_ids = [r["product_id"] for r in (dismissed_resp.data or [])]
- 
+
     resp = (
         supabase
         .schema("preorder")
@@ -416,22 +420,34 @@ def get_late_arrivals(ok: bool = Depends(require_admin_token)):
         .execute()
     )
 
-    from datetime import datetime, timedelta
+    def _within_90_days(row) -> bool:
+        """
+        True when stock arrived within 90 days of pub date.
 
-    def _within_90_days(row):
+        Compares on DATE only. first_positive_inventory_at is a tz-aware
+        timestamp string (…+00) while pub_date is a plain YYYY-MM-DD; parsing
+        both to full datetimes and comparing raised
+        "can't compare offset-naive and offset-aware datetimes", which threw for
+        every row and made the endpoint return nothing while the metric still
+        counted them. Date-only comparison avoids the tz mismatch and matches the
+        90-day intent.
+        """
         pub = row.get("pub_date")
         arrived = row.get("first_positive_inventory_at")
         if not pub or not arrived:
             return False
-        pub_dt = datetime.fromisoformat(pub)
-        arrived_dt = datetime.fromisoformat(arrived.replace("Z", "+00:00"))
-        return arrived_dt <= pub_dt + timedelta(days=90)
+        try:
+            pub_d = date.fromisoformat(str(pub)[:10])
+            arrived_d = date.fromisoformat(str(arrived)[:10])
+        except ValueError:
+            return False
+        return arrived_d <= pub_d + timedelta(days=90)
 
     results = [
         r for r in (resp.data or [])
         if r["product_id"] not in dismissed_ids
-        and r.get("lifecycle_closed") == False      # ← filter in Python
-        and _within_90_days(r)                     # ← additional filter
+        and r.get("lifecycle_closed") == False
+        and _within_90_days(r)
     ]
     return results
 
