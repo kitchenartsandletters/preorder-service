@@ -36,7 +36,6 @@ def _scenario_plan():
         2: {"profile_name": "October 7, 2026", "profile_gid": DATE_OCT7},
         4: {"profile_name": NAME_WEEK_NOV1, "profile_gid": WEEK_NOV1},
         5: {"profile_name": "July 1, 2026", "profile_gid": DATE_JUL1},
-        # 3 is on General (absent); 6/7 not on date profiles
     }
     non_default_profiles = [
         {"profile_gid": DATE_OCT6, "name": "October 6, 2026", "products": [{"product_id": 1}]},
@@ -56,7 +55,6 @@ def test_plan_groups_by_week():
     plan = _compute = _scenario_plan()
     weeks = {w["week_start"]: w for w in plan["weeks"]}
     assert set(weeks) == {"2026-10-04", "2026-10-18", "2026-11-01"}
-    # Oct 6 and Oct 7 collapse into one week (the Mon-Lapin case), both moving
     oct4 = weeks["2026-10-04"]
     assert oct4["profile_name"] == "Week of Oct 4\u201310, 2026"
     assert oct4["profile_status"] == "create" and oct4["profile_gid"] is None
@@ -67,12 +65,10 @@ def test_plan_groups_by_week():
 def test_plan_add_from_general_and_existing_week():
     plan = _scenario_plan()
     weeks = {w["week_start"]: w for w in plan["weeks"]}
-    # Oct 21 -> new week, product from General => add
     oct18 = weeks["2026-10-18"]
     assert oct18["profile_status"] == "create"
     assert [t["action"] for t in oct18["titles"]] == ["add"]
     assert oct18["titles"][0]["current_profile"] == "General"
-    # Nov 3 -> existing mapped week profile => already
     nov1 = weeks["2026-11-01"]
     assert nov1["profile_status"] == "exists" and nov1["profile_gid"] == WEEK_NOV1
     assert [t["action"] for t in nov1["titles"]] == ["already"]
@@ -88,11 +84,8 @@ def test_plan_buckets():
 def test_plan_emptied_profiles():
     plan = _scenario_plan()
     emptied = {e["profile_gid"] for e in plan["emptied_profiles"]}
-    # Per-date Oct profiles empty (their product moves to the week profile).
     assert DATE_OCT6 in emptied and DATE_OCT7 in emptied
-    # July profile does NOT empty here (P5 is past -> should_be_removed, not a week move).
     assert DATE_JUL1 not in emptied
-    # The existing week profile keeps its already-there product.
     assert WEEK_NOV1 not in emptied
 
 
@@ -101,8 +94,8 @@ def test_plan_summary():
     assert s["weeks_total"] == 3
     assert s["weeks_to_create"] == 2
     assert s["titles_total"] == 4
-    assert s["titles_moving"] == 3      # P1,P2 move + P3 add
-    assert s["titles_already"] == 1     # P4
+    assert s["titles_moving"] == 3
+    assert s["titles_already"] == 1
     assert s["profiles_emptied"] == 2
     assert s["should_be_removed"] == 1
     assert s["exempt"] == 1
@@ -110,7 +103,6 @@ def test_plan_summary():
 
 
 def test_plan_adopt_by_name_when_unmapped():
-    # Week profile exists by NAME but not in the mapping table -> still "exists".
     preorders = [{"product_id": 10, "status": "active_preorder", "pub_date": date(2026, 10, 21), "title": "B", "inventory": 0}]
     name = "Week of Oct 18\u201324, 2026"
     prof = {"profile_gid": "gid://shopify/DeliveryProfile/WEEKOCT18", "name": name, "products": []}
@@ -120,10 +112,26 @@ def test_plan_adopt_by_name_when_unmapped():
     wk = plan["weeks"][0]
     assert wk["profile_status"] == "exists"
     assert wk["profile_gid"] == "gid://shopify/DeliveryProfile/WEEKOCT18"
-    assert wk["titles"][0]["action"] == "add"  # product was on General
+    assert wk["titles"][0]["action"] == "add"
 
 
-# ---- apply orchestration (faked) ----
+def test_plan_excludes_arrived_active():
+    # An active preorder that has physically arrived is excluded from week
+    # grouping (slated to detach, not group), even with a future pub date.
+    preorders = [
+        {"product_id": 1, "status": "active_preorder", "pub_date": date(2026, 9, 15),
+         "title": "Arrived", "inventory": 0, "arrival_record_is_live": True,
+         "first_positive_inventory_at": "2026-08-24T00:00:00+00:00"},
+        {"product_id": 2, "status": "active_preorder", "pub_date": date(2026, 9, 15),
+         "title": "NotArrived", "inventory": 0},
+    ]
+    ppm = {1: {"profile_name": "October 6, 2026", "profile_gid": DATE_OCT6}}
+    non_default = [{"profile_gid": DATE_OCT6, "name": "October 6, 2026", "products": [{"product_id": 1}]}]
+    plan = wm._compute_week_plan(preorders, ppm, non_default, {}, {p["name"]: p for p in non_default}, TODAY)
+    title_ids = [t["product_id"] for w in plan["weeks"] for t in w["titles"]]
+    assert 1 not in title_ids   # arrived-active excluded
+    assert 2 in title_ids       # non-arrived grouped normally
+
 
 def test_apply_single_week_creates_and_assigns():
     calls = {"preview": 0, "resolved": None, "assigned": []}
@@ -151,7 +159,7 @@ def test_apply_single_week_creates_and_assigns():
 
     async def fake_assign(client, profile_gid, product_id, variant_gid=None):
         calls["assigned"].append((profile_gid, product_id))
-        return []  # no errors
+        return []
 
     saved = {}
     for n, f in {
@@ -168,8 +176,8 @@ def test_apply_single_week_creates_and_assigns():
         for n, f in saved.items():
             setattr(wm, n, f)
 
-    assert calls["preview"] == 1                      # create => preflight ran
-    assert calls["resolved"] == ("2026-10-06", 1)     # seeded with first title
+    assert calls["preview"] == 1
+    assert calls["resolved"] == ("2026-10-06", 1)
     assert calls["assigned"] == [
         ("gid://shopify/DeliveryProfile/NEW", 1),
         ("gid://shopify/DeliveryProfile/NEW", 2),
