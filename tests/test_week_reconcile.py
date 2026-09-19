@@ -5,6 +5,7 @@ Key semantics under the week model:
   * on the MAPPED week profile        -> correctly_assigned
   * on an old per-date profile        -> wrong_profile (the migration to-do)
   * on General                        -> missing_from_profile
+  * arrived active preorder on profile -> arrived_should_detach (fulfillable now)
   * past pub date, on any profile     -> should_be_removed
   * early stock w/ inventory          -> exempt
   * no pub date                       -> no_pub_date
@@ -20,11 +21,13 @@ TODAY = date(2026, 8, 9)
 DATE_OCT6 = "gid://shopify/DeliveryProfile/OCT6"
 WEEK_OCT4 = "gid://shopify/DeliveryProfile/WEEKOCT4"
 WEEK_NOV1 = "gid://shopify/DeliveryProfile/WEEKNOV1"
+WEEK_SEP13 = "gid://shopify/DeliveryProfile/WEEKSEP13"
 DATE_JUL1 = "gid://shopify/DeliveryProfile/JUL1"
 EMPTY_OLD = "gid://shopify/DeliveryProfile/EMPTYOLD"
 
 NAME_WEEK_OCT4 = "Week of Oct 4\u201310, 2026"
 NAME_WEEK_NOV1 = "Week of Nov 1\u20137, 2026"
+NAME_WEEK_SEP13 = "Week of Sep 13\u201319, 2026"
 
 
 def _reconcile():
@@ -100,6 +103,7 @@ def test_summary_and_model():
         "correctly_assigned": 1,
         "wrong_profile": 1,
         "missing_from_profile": 1,
+        "arrived_should_detach": 0,
         "should_be_removed": 1,
         "exempt": 1,
         "no_pub_date": 1,
@@ -110,8 +114,72 @@ def test_migration_progress_and_repurpose_ready():
     m = _reconcile()["migration"]
     assert m["titles_on_week_profile"] == 1
     assert m["titles_needing_migration"] == 2  # wrong_profile + missing
+    assert m["arrived_to_detach"] == 0
     ready = {p["profile_gid"] for p in m["repurpose_ready_profiles"]}
     assert ready == {EMPTY_OLD}  # only the currently-empty non-default profile
+
+
+# ── arrived_should_detach ─────────────────────────────────────────────
+
+def _arrived_case(on_profile, arrived=True, status="active_preorder", inv=0, pub=date(2026, 9, 15)):
+    """One product; on WEEK_SEP13 if on_profile else General. Sep 15 -> week Sep 13."""
+    ppm = {}
+    non_default = []
+    if on_profile:
+        ppm[1] = {"profile_name": NAME_WEEK_SEP13, "profile_gid": WEEK_SEP13}
+        non_default = [{"profile_gid": WEEK_SEP13, "name": NAME_WEEK_SEP13, "products": [{"product_id": 1}]}]
+    preorders = [{
+        "product_id": 1, "status": status, "pub_date": pub, "title": "Arrived",
+        "inventory": inv, "arrival_record_is_live": arrived,
+        "first_positive_inventory_at": "2026-08-24T00:00:00+00:00",
+    }]
+    profiles_by_name = {p["name"]: p for p in non_default}
+    return compute_week_reconcile(preorders, ppm, non_default, {}, profiles_by_name, TODAY)
+
+
+def test_arrived_active_on_profile_flags_detach():
+    out = _arrived_case(on_profile=True)
+    r = out["report"]
+    assert [e["product_id"] for e in r["arrived_should_detach"]] == [1]
+    e = r["arrived_should_detach"][0]
+    assert e["current_profile"] == NAME_WEEK_SEP13
+    assert e["arrived_at"].startswith("2026-08-24")
+    # not double-counted anywhere else
+    assert r["correctly_assigned"] == [] and r["wrong_profile"] == [] and r["should_be_removed"] == []
+    assert out["migration"]["arrived_to_detach"] == 1
+
+
+def test_arrived_active_already_on_general_no_flag():
+    # arrived but already off profiles -> nothing to do, and NOT mis-flagged missing
+    r = _arrived_case(on_profile=False)["report"]
+    assert r["arrived_should_detach"] == []
+    assert r["missing_from_profile"] == []
+
+
+def test_arrived_independent_of_inventory_sign():
+    # arrived then oversold into negative inventory -> still flagged
+    r = _arrived_case(on_profile=True, inv=-14)["report"]
+    assert [e["product_id"] for e in r["arrived_should_detach"]] == [1]
+
+
+def test_arrived_precedes_should_be_removed_for_past_pub():
+    r = _arrived_case(on_profile=True, pub=date(2026, 7, 1))["report"]
+    assert [e["product_id"] for e in r["arrived_should_detach"]] == [1]
+    assert r["should_be_removed"] == []
+
+
+def test_not_arrived_active_unaffected():
+    # same title, not arrived -> normal week assignment (on its week profile)
+    r = _arrived_case(on_profile=True, arrived=False)["report"]
+    assert r["arrived_should_detach"] == []
+    assert [e["product_id"] for e in r["correctly_assigned"]] == [1]
+
+
+def test_early_stock_arrived_stays_exempt_not_detach():
+    # early_stock_arrival + inv>0 stays exempt even if arrived; bucket is active_preorder-only
+    r = _arrived_case(on_profile=True, status="early_stock_arrival", inv=5)["report"]
+    assert r["arrived_should_detach"] == []
+    assert [e["product_id"] for e in r["exempt"]] == [1]
 
 
 if __name__ == "__main__":

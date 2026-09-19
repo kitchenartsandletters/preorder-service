@@ -3,10 +3,20 @@ services/week_reconcile.py — week-aware reconcile.
 
 Re-expresses the shipping reconcile against the week model: a title is
 `correctly_assigned` when it sits on the delivery profile mapped to its Sun–Sat
-release week (mapping table first, name second). Same six buckets as the
+release week (mapping table first, name second). Same bucket shape as the
 date-based reconcile, so the dashboard reads it unchanged; adds a `migration`
 progress block (titles on their week profile vs still needing to move, and
 profiles now empty and ready to repurpose).
+
+Two "detach" buckets, both flagged for review (the operator clicks; detaching
+is a Shopify write with fulfillment implications):
+  * should_be_removed    — pub date has passed; the title should fall back to
+                           General.
+  * arrived_should_detach — an active preorder that has physically arrived (a
+                           live inventory_arrival record) is fulfillable now and
+                           should be detached early, even with a still-future
+                           pub date. Independent of inventory sign — a title can
+                           arrive and then oversell into negative inventory.
 
 Titles still on their old per-date profile show as `wrong_profile` — under the
 week model that's the correct signal: they are the migration to-do list.
@@ -34,13 +44,14 @@ def compute_week_reconcile(
     today: date,
 ) -> Dict[str, Any]:
     """
-    Pure week-aware reconcile. Inputs mirror the planner's. Returns the six-bucket
+    Pure week-aware reconcile. Inputs mirror the planner's. Returns the bucketed
     report (dashboard-compatible) plus `model` and a `migration` progress block.
     """
     report: Dict[str, List[Dict[str, Any]]] = {
         "correctly_assigned": [],
         "wrong_profile": [],
         "missing_from_profile": [],
+        "arrived_should_detach": [],
         "should_be_removed": [],
         "exempt": [],
         "no_pub_date": [],
@@ -64,6 +75,20 @@ def compute_week_reconcile(
                 "current_profile": current["profile_name"] if current else "General",
                 "reason": "Early stock on hand — fulfillable without a date/week profile",
             })
+            continue
+        # An active preorder that has physically arrived (live inventory_arrival
+        # record) is fulfillable now and should be detached from its date/week
+        # profile early, even with a still-future pub date. Checked before the
+        # pub-date and week-assignment logic so an arrived title never gets
+        # (re)assigned to a week profile; if it's already on General it's cleanly
+        # detached and needs no action.
+        if status == "active_preorder" and po.get("arrival_record_is_live"):
+            if current:
+                report["arrived_should_detach"].append({
+                    "product_id": pid, "title": title, "pub_date": pub.isoformat(),
+                    "current_profile": current["profile_name"],
+                    "arrived_at": po.get("first_positive_inventory_at"),
+                })
             continue
         if pub <= today:
             if current:
@@ -103,6 +128,7 @@ def compute_week_reconcile(
     migration = {
         "titles_on_week_profile": len(report["correctly_assigned"]),
         "titles_needing_migration": len(report["wrong_profile"]) + len(report["missing_from_profile"]),
+        "arrived_to_detach": len(report["arrived_should_detach"]),
         "repurpose_ready_profiles": repurpose_ready,
     }
     summary = {k: len(v) for k, v in report.items()}
