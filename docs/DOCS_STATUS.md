@@ -13,16 +13,33 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-09-12
+Last updated: 2026-09-19
 
 | Document | Status |
 |---|---|
 | `docs/DOCS_STATUS.md` (this file) | **Authoritative** for document status only. |
 | `docs/shipping_profiles.md` | **Current and authoritative** for the date-based shipping-profile create/repurpose flow (zones, carrier IDs, `includeAllProvinces`). Written and verified this engagement. Its Auth section correctly states client-credentials. |
+| `docs/phase_unified_pubdate_and_tag_simplification.md` | **DRAFT PROPOSAL — approved in principle, not yet implemented.** Plan to collapse the date model to a single `pub_date` SoT + `pub_date_history` table, retire the `override_date` metafield, delete `date_tags` (after mining into history), and demote the `preorder` tag. Its §2 current-state citations were verified at authoring (2026-09-19) but the doc itself instructs re-verifying against live code before building. Describes FUTURE state — do NOT read it as how the system works today. |
 | `docs/Preorder Classification Specification.md` | **Not yet re-verified.** The engine has changed since it was written (added `anomaly_stale_collection`, delayed-import hold, `>=`/`<=` pub-date boundaries, `has_inventory_arrival` gates). Treat `classification/engine.py` as truth; audit this doc against it before relying on it. |
 | `docs/Trust_Tier_Labeling.md` | **Not yet re-verified.** Referenced by data-confidence logic; may predate several arrival/reporting changes. |
 | `docs/test_matrix.md` | **Not yet re-verified.** |
 | root `README.md` (54 KB) | **Not yet re-verified — audit before trusting.** Large inherited document; has not been read against current state in this pass. Do not treat its setup/env sections as authoritative until audited — see the auth contract and landmines below. |
+
+---
+
+## Where key logic lives (verified — safe to trust)
+
+Facts about *where the truth is computed*, recorded so the next thread doesn't
+re-derive or duplicate them.
+
+- **Alert count and list share one source-of-truth view each** (as of PR #21,
+  2026-09-19). `preorder.vw_late_arrivals_unresolved` and
+  `preorder.vw_no_arrival_unresolved` encode each alert's full definition
+  (filters + `alert_dismissals` exclusion) once. `vw_preorder_metrics` counts
+  these views; the `/late-arrivals` and `/no-arrival-titles` endpoints select
+  them. To change alert logic, edit the view — never re-derive it inline in the
+  metric or in the endpoint. (This retired a recurring class of count/list drift
+  bugs; do not reintroduce parallel derivations.)
 
 ---
 
