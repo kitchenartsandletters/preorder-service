@@ -12,7 +12,6 @@ import services.week_migration as wm
 
 TODAY = date(2026, 8, 9)
 
-# Profile gids
 DATE_OCT6 = "gid://shopify/DeliveryProfile/OCT6"
 DATE_OCT7 = "gid://shopify/DeliveryProfile/OCT7"
 DATE_JUL1 = "gid://shopify/DeliveryProfile/JUL1"
@@ -131,6 +130,24 @@ def test_plan_excludes_arrived_active():
     title_ids = [t["product_id"] for w in plan["weeks"] for t in w["titles"]]
     assert 1 not in title_ids   # arrived-active excluded
     assert 2 in title_ids       # non-arrived grouped normally
+
+
+def test_plan_excludes_arrived_early_stock():
+    # generalized: an early_stock_arrival that has arrived is also excluded from
+    # week grouping (the Spinasse shape), not just active preorders — and it is
+    # not dumped into the plan's exempt list either.
+    preorders = [
+        {"product_id": 1, "status": "early_stock_arrival", "pub_date": date(2026, 9, 29),
+         "title": "Spinasse", "inventory": 0, "arrival_record_is_live": True,
+         "first_positive_inventory_at": "2026-08-28T20:54:00+00:00"},
+        {"product_id": 2, "status": "active_preorder", "pub_date": date(2026, 9, 29),
+         "title": "NotArrived", "inventory": 0},
+    ]
+    plan = wm._compute_week_plan(preorders, {}, [], {}, {}, TODAY)
+    title_ids = [t["product_id"] for w in plan["weeks"] for t in w["titles"]]
+    assert 1 not in title_ids   # arrived early-stock excluded
+    assert 2 in title_ids       # non-arrived active grouped normally
+    assert [r["product_id"] for r in plan["exempt"]] == []
 
 
 def test_apply_single_week_creates_and_assigns():
