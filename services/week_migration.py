@@ -73,18 +73,19 @@ def _compute_week_plan(
         if pub is None:
             no_pub_date.append({"product_id": pid, "title": title, "status": status})
             continue
+        # Any title with a live inventory_arrival record has physically arrived
+        # and belongs on General, not a week profile — whatever its status or
+        # inventory sign. Exclude it from week grouping so week-apply never
+        # (re)attaches a title that's slated to detach; the week-aware reconcile
+        # surfaces it (detach if still on a profile).
+        if po.get("arrival_record_is_live"):
+            continue
         if status == "early_stock_arrival" and inv > 0:
             exempt.append({
                 "product_id": pid, "title": title, "pub_date": pub.isoformat(),
                 "inventory": inv,
                 "current_profile": current["profile_name"] if current else "General",
             })
-            continue
-        # An active preorder that has physically arrived (live inventory_arrival
-        # record) is fulfillable now and slated to be detached from its shipping
-        # profile — exclude it from week grouping so week-apply never (re)attaches
-        # it. The week-aware reconcile surfaces it for detach.
-        if status == "active_preorder" and po.get("arrival_record_is_live"):
             continue
         if pub <= today:
             if current:
@@ -181,9 +182,9 @@ def _fetch_arrival_flags(supabase: Any) -> Dict[int, Dict[str, Any]]:
     titles with a live inventory_arrival record, from preorder.vw_preorder_products.
 
     The live-arrival flag is set broadly across the catalog (backlist included),
-    so callers must scope it (e.g. to active_preorder). Degrades gracefully: if
-    the view can't be read, returns {} so reconcile/plan still work — just
-    without the arrived-detach signal.
+    so callers must scope it (e.g. to active/early-stock preorders). Degrades
+    gracefully: if the view can't be read, returns {} so reconcile/plan still
+    work — just without the arrived-detach signal.
     """
     try:
         resp = (
