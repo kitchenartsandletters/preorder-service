@@ -19,7 +19,8 @@ Last updated: 2026-09-19
 |---|---|
 | `docs/DOCS_STATUS.md` (this file) | **Authoritative** for document status only. |
 | `docs/shipping_profiles.md` | **Current and authoritative** for the date-based shipping-profile create/repurpose flow (zones, carrier IDs, `includeAllProvinces`). Written and verified this engagement. Its Auth section correctly states client-credentials. |
-| `docs/phase_unified_pubdate_and_tag_simplification.md` | **DRAFT PROPOSAL — approved in principle, not yet implemented.** Plan to collapse the date model to a single `pub_date` SoT + `pub_date_history` table, retire the `override_date` metafield, delete `date_tags` (after mining into history), and demote the `preorder` tag. Its §2 current-state citations were verified at authoring (2026-09-19) but the doc itself instructs re-verifying against live code before building. Describes FUTURE state — do NOT read it as how the system works today. |
+| `docs/phase_unified_pubdate_and_tag_simplification.md` | **SUPERSEDED (2026-09-19) by `docs/phase_unified_pubdate_rev2.md`.** Kept for the trail — do NOT build from it. Its premises carry errata **E1–E7** (section below): it proposed a duplicate history table, assumed live date tags, missed the DB override source, rested on a false "override always means earlier" premise, understated the `preorder` tag's coupling, omitted several engine/wiring touch-points, and did not account for Shopify-side and storefront consumers. |
+| `docs/phase_unified_pubdate_rev2.md` | **CURRENT — authoritative plan for the unified pub-date / override-collapse / tag-simplification phase. Not yet implemented.** §2 (current state) verified 2026-09-19 against `main` `6677400`, the production `preorder` schema, `admin-dashboard` `ac7609a`, and shopify.dev; everything else describes FUTURE state. Contains the locked decisions D1–D10 and blocking gates G1–G4 (G3 enforced in code). Record gate sign-offs in its §5.1 gate log. |
 | `docs/Preorder Classification Specification.md` | **Not yet re-verified.** The engine has changed since it was written (added `anomaly_stale_collection`, delayed-import hold, `>=`/`<=` pub-date boundaries, `has_inventory_arrival` gates). Treat `classification/engine.py` as truth; audit this doc against it before relying on it. |
 | `docs/Trust_Tier_Labeling.md` | **Not yet re-verified.** Referenced by data-confidence logic; may predate several arrival/reporting changes. |
 | `docs/test_matrix.md` | **Not yet re-verified.** |
@@ -40,6 +41,88 @@ re-derive or duplicate them.
   them. To change alert logic, edit the view — never re-derive it inline in the
   metric or in the endpoint. (This retired a recurring class of count/list drift
   bugs; do not reintroduce parallel derivations.)
+- **Pub-date history already exists** (verified 2026-09-19):
+  `preorder.pubdate_history`, written by
+  `orchestrator.classify_and_persist_product` whenever the effective pub date
+  changes versus `product_status`. Live since 2026-03-03. Extend it — do not
+  create a parallel history table (see E1).
+
+---
+
+## Errata — `phase_unified_pubdate_and_tag_simplification.md` (superseded)
+
+The seven premise corrections below were found while verifying the proposal
+against live code, the production database, and shopify.dev on 2026-09-19. They
+are why the proposal was superseded by `docs/phase_unified_pubdate_rev2.md`,
+which is built on the corrected facts. Counts are 2026-09-19 snapshots.
+
+- **E1 — The history table already exists** (§3.2 and Move 1.1 of the original).
+  The proposal would create `pub_date_history`. But `preorder.pubdate_history`
+  is already live: about 1,880 rows since 2026-03-03, written by the orchestrator
+  on every effective-date change. It has a `metadata jsonb` column. Resolution:
+  extend the existing table (D2).
+- **E2 — Date tags are inert on the live path** (§2.1, §2.3, §2.6). The
+  proposal says the classifier reads `MM-DD-YYYY` tags. In reality:
+  - `shopify_service` keeps only `YYYY-MM-DD` tags.
+  - `ProductMetadata.parsed_date_tags()` keeps only `MM-DD-YYYY` tags.
+  - No tag passes both, so `date_tags` is always `[]` in production.
+  - There are zero `legacy_tag_fallback` history rows.
+  - `anomaly_pubdate_conflict`, `anomaly_multi_date_conflict` and override Case 2
+    can never fire.
+  - On products: 9,171 valid `MM-DD-YYYY` tags, 9 valid `YYYY-MM-DD` tags, and 2
+    malformed tags (`02-29-2022`, `13-02-2020`).
+  - Do not "fix" the regex. It would activate `pubdate_conflict` at scale.
+- **E3 — Override has two sources** (§1, §2.6). The proposal treats override as
+  a metafield only. In reality:
+  - `orchestrator` and the alignment audit also read
+    `preorder.product_overrides` via `override_service.fetch_override_date`, and
+    the DB value **wins**.
+  - The table holds one junk row (product `12345`).
+  - Its write path, `update_override_date_and_reclassify`, is called by no route
+    and writes a column (`updated_by`) the table lacks.
+  - `vw_preorder_products.override_status` joins it, and the dashboard sidebar
+    renders that column.
+  - The metafield is `custom.preorder_override_date`.
+- **E4 — "An override always means an earlier date" is false** (§1.1). Of 36
+  products with the override metafield:
+  - 2 are earlier: the two test titles.
+  - 29 are later: 22 historical, 6 active, 1 early stock.
+  - 4 have no `pub_date`.
+  - 1 is equal.
+
+  The `ui_backdate` migration label built on this premise is retired in favor of
+  `override_migration`, with the direction in metadata (D3). Effective dates
+  already equal the override value for all 36, so folding is
+  effective-date-neutral.
+- **E5 — The `preorder` tag gates six predicates, not one** (§2.4). The proposal
+  says the tag only gates `historical_preorder`. `_has_preorder_tag` also feeds:
+  - `_is_structurally_preorder` (active, early-stock, delayed-import)
+  - `anomaly_stale_collection`
+  - `anomaly_missing_tag`
+  - `anomaly_missing_collection`
+  - the `pdp_cleanup` early-stock path
+
+  Every one needs a ruling in Move 3.
+- **E6 — The engine and wiring touch-list is incomplete** (§2.3, §2.5, §2.6).
+  - `anomaly_stale_collection` also reads `override_date` and `date_tags`.
+  - `classification/types.py` holds a stub `classify_preorder_product`.
+  - The orchestrator and the alignment audit do **not** build
+    `ClassificationInput` the same way: the audit omits `has_inventory_arrival`.
+  - Three different functions are named `reclassify_single_product`.
+  - The bulk importer emits a Shopify CSV. It cannot write history rows, and it
+    also bakes a release-date sentence into the description HTML.
+- **E7 — Shopify-side and storefront consumers were not accounted for** (§2.5,
+  §7).
+  - The pinned API version `2025-10` stops being accessible on 2026-10-16
+    15:00 UTC.
+  - Metafield-only edits are not reliably documented to emit `products/update`.
+    Shopify's metafield-targeted Events are still `unstable` preview.
+  - The storefront theme (`main-product.liquid`) reads the override metafield to
+    compute an effective date. It stamps that date on every cart line as
+    `properties[_pubdate]`.
+
+  This makes fold-before-delete order load-bearing for a customer-facing
+  consumer. See gates G1 and G2 in the revision.
 
 ---
 
@@ -90,6 +173,55 @@ Supabase key name; standard is `SUPABASE_SERVICE_ROLE_KEY`). Node was the
 deferred track in the token migration. This script will not authenticate as-is.
 **Needs:** the Node token-factory pattern (client-credentials) noted in the
 migration runbook, or retirement if unused.
+
+### Landmine 3: pinned Shopify API version is about to become inaccessible
+
+`SHOPIFY_API_VERSION` defaults to `2025-10`, which is accessible until
+**2026-10-16 15:00 UTC**. After that, Shopify serves requests with the oldest
+accessible stable version. The latest stable version is `2026-07`. **Needs:** a
+version bump plus a smoke test. This is scheduled as rev2 Move 0.2.
+
+### Landmine 4: the alignment audit does not mirror the orchestrator
+
+`audits/shopify_alignment_audit.py` builds `ClassificationInput` without
+`has_inventory_arrival`, so the field defaults to `False`. Its "expected" status
+is therefore wrong for any title with an arrival record, including early stock,
+stale collection, PDP cleanup and delayed import. **Needs:** a shared input
+builder, scheduled as rev2 Move 0.4.
+
+### Landmine 5: stub classifier in `classification/types.py`
+
+The file defines a second `classify_preorder_product` that returns a placeholder
+`anomaly_missing_tag`. Nothing imports it today. Importing the wrong one would
+silently misclassify everything. **Needs:** deletion, scheduled as rev2 Move 0.3.
+
+### Landmine 6: dead, broken override write path
+
+`override_service.update_override_date_and_reclassify` has no route. If it were
+called, it would fail, because it upserts `updated_by`, a column
+`preorder.product_overrides` does not have. The table holds one junk row
+(product `12345`). **Needs:** removal with the table, scheduled as rev2
+Move 1g.
+
+### Landmine 7: `pubdate_history` exists only in production
+
+No migration in `db/migrations/` creates `preorder.pubdate_history`. It was made
+out-of-band. **Needs:** a baseline migration capturing the live DDL, scheduled
+as rev2 Move 0.6.
+
+### Landmine 8: test suite baseline is red
+
+A local run at `6677400` gave 146 passed, 16 failed, 1 collection error.
+
+- At least 10 failures are fake Supabase clients that lack `.schema()`
+  (orchestrator, persistence, `test_pubdate_history`).
+- 1 failure is a stale test, `test_no_future_date_blocks_active`, which asserts
+  pre-delayed-import behavior.
+- 5 failures are undiagnosed: lifecycle-snapshotter (4) and override-service (1).
+- `test_reclassify_endpoint.py` needs live Supabase env to import.
+- `pytest` and `pytest-asyncio` are not in `requirements.txt`.
+
+**Needs:** rev2 Move 0.1, before any orchestrator change.
 
 ---
 
