@@ -209,7 +209,85 @@ No migration in `db/migrations/` creates `preorder.pubdate_history`. It was made
 out-of-band. **Needs:** a baseline migration capturing the live DDL, scheduled
 as rev2 Move 0.6.
 
-### Landmine 8: test suite baseline is red
+### Landmine 9: `/approvals` router is mounted with NO authentication
+
+`routes/approvals.py` is included in `main.py` with no auth dependency. The only
+app-wide middleware is CORS, which restricts browsers, not scripts or `curl`.
+
+Its endpoints:
+- `GET /approvals/list` reads `preorder.vw_pending_approvals`.
+- `POST /approvals/approve` **writes** `preorder.approvals`, including an
+  `override_pub_date` column.
+- `POST /approvals/revoke` **writes** `preorder.approvals`.
+
+Found from code on 2026-09-19. It was deliberately not probed against
+production. No callers exist in this repo or in `admin-dashboard`, and the table
+is dormant (1 row, last updated 2025-11-10).
+
+**Needs:** an owner decision, then a dedicated PR. The likely fix is to unmount
+the router; the alternative is to add the `admin_*` `require_admin_token`. It is
+not part of the pub-date phase. Its `override_pub_date` column feeds only
+`vw_pending_approvals`, not the classifier.
+
+### Landmine 10: import-time env reads, and admin-auth outliers
+
+**Import-time env reads.** Five routers call `create_client(...)` at import
+instead of using the lazy `services/supabase_client.get_client()`:
+- `admin_preorders`
+- `admin_nyt`
+- `admin_shipping`
+- `admin_tagger`
+- `admin_cleanup`
+
+Four jobs read required env with `os.environ[...]` at module level:
+- `mailtrap`
+- `order_tagger`
+- `nyt_notifier`
+- `nyt_reporter`
+
+As a result, `import main` needs a full environment. Tests accommodate this in
+`tests/conftest.py` (PR #25). Production is unchanged.
+
+**Admin auth outliers.** The five `admin_*` routers are consistent:
+`X-Admin-Token` checked against `PREORDER_ADMIN_TOKEN`, matching `CLAUDE.md`.
+Each keeps its own copy of `require_admin_token`. The outliers are:
+- `internal_events` uses `x-admin-key` checked against `PREORDER_ADMIN_TOKEN`.
+- `reclassify` uses `x-admin-key` checked against `RECLASSIFY_ADMIN_KEY`.
+
+**For rev2 Move 1c:** the new pub-date endpoints follow the `admin_*`
+convention.
+
+**Needs:** a separate cleanup: lazy clients and a single shared admin-auth
+dependency. It is not blocking.
+
+### Resolved
+
+#### Landmine 8: test suite baseline is red — RESOLVED in PR #25 (rev2 Move 0.1)
+
+The suite went from 146 passed / 16 failed / 1 error to **178 passed / 1 skipped**.
+
+What PR #25 fixed:
+- **Shared test fake.** It added the shared in-memory `tests/fakes.py`
+  (`FakeSupabase`) that mirrors `.schema().table()`. Tests now assert DB state.
+- **Snapshotter fake.** It rewrote the lifecycle-snapshotter fake to model the
+  current queries.
+- **Stale test.** It replaced the stale delayed-import test.
+- **Dead-code test.** It skipped the dead override-service test with a reason
+  (Landmine 6).
+- **Dependencies.** It added `requirements-dev.txt`.
+- **Two silent traps:**
+  - `.gitignore` excluded all of `tests/`, so new test files were never
+    committed.
+  - `tests/test_inventory_arrival_replay.py` had a trailing space in its name,
+    so pytest never collected it.
+- **Diagnosis of the 5 previously undiagnosed failures:**
+  - The 4 lifecycle-snapshotter failures were fake drift. One of those tests
+    also asserted behavior production had removed.
+  - The override-service failure was call-style drift on dead code.
+
+The original entry is preserved below.
+
+##### (original) Landmine 8: test suite baseline is red
 
 A local run at `6677400` gave 146 passed, 16 failed, 1 collection error.
 
