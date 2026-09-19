@@ -391,98 +391,42 @@ def mark_reported(
 @router.get("/late-arrivals")
 def get_late_arrivals(ok: bool = Depends(require_admin_token)):
     """
-    Returns historical preorder titles with verified late inventory arrival
-    and open lifecycle snapshots, arrived within 90 days of pub date.
-    Excludes dismissed alerts.
+    Historical preorder titles with a verified late inventory arrival, open
+    lifecycle, arrived within 90 days of pub date, not dismissed.
 
-    Must stay in sync with vw_preorder_metrics.late_arrivals_unresolved so the
-    dashboard count and this list agree.
+    Reads from preorder.vw_late_arrivals_unresolved — the SINGLE SOURCE OF TRUTH
+    shared with vw_preorder_metrics.late_arrivals_unresolved (which counts this
+    same view). Because the count and the list are the same query, they cannot
+    drift. Do not re-implement the filter logic here; change the view instead.
     """
-    # Get dismissed product IDs for late_arrival alerts
-    dismissed_resp = (
-        supabase
-        .schema("preorder")
-        .table("alert_dismissals")
-        .select("product_id")
-        .eq("alert_type", "late_arrival")
-        .execute()
-    )
-    dismissed_ids = [r["product_id"] for r in (dismissed_resp.data or [])]
-
     resp = (
         supabase
         .schema("preorder")
-        .from_("vw_preorder_products")
-        .select("product_id, title, isbn, pub_date, arrival_timing, first_positive_inventory_at, arrival_record_is_live, lifecycle_closed")
-        .eq("classification", "historical_preorder")
-        .eq("arrival_timing", "late_arrival")
-        .eq("arrival_record_is_live", True)
+        .from_("vw_late_arrivals_unresolved")
+        .select("product_id, title, isbn, pub_date, arrival_timing, first_positive_inventory_at")
+        .order("pub_date", desc=False)
         .execute()
     )
-
-    def _within_90_days(row) -> bool:
-        """
-        True when stock arrived within 90 days of pub date.
-
-        Compares on DATE only. first_positive_inventory_at is a tz-aware
-        timestamp string (…+00) while pub_date is a plain YYYY-MM-DD; parsing
-        both to full datetimes and comparing raised
-        "can't compare offset-naive and offset-aware datetimes", which threw for
-        every row and made the endpoint return nothing while the metric still
-        counted them. Date-only comparison avoids the tz mismatch and matches the
-        90-day intent.
-        """
-        pub = row.get("pub_date")
-        arrived = row.get("first_positive_inventory_at")
-        if not pub or not arrived:
-            return False
-        try:
-            pub_d = date.fromisoformat(str(pub)[:10])
-            arrived_d = date.fromisoformat(str(arrived)[:10])
-        except ValueError:
-            return False
-        return arrived_d <= pub_d + timedelta(days=90)
-
-    results = [
-        r for r in (resp.data or [])
-        if r["product_id"] not in dismissed_ids
-        and r.get("lifecycle_closed") == False
-        and _within_90_days(r)
-    ]
-    return results
+    return resp.data or []
 
 @router.get("/no-arrival-titles")
 def get_no_arrival_titles(ok: bool = Depends(require_admin_token)):
     """
-    Returns titles past pub date with no inventory received.
-    These need vendor follow-up. Excludes dismissed alerts.
+    Titles past pub date with no inventory received (post-cutover, not dismissed).
+
+    Reads from preorder.vw_no_arrival_unresolved — the SINGLE SOURCE OF TRUTH
+    shared with vw_preorder_metrics.no_arrival_count. Count and list are the same
+    query and cannot drift. Change the view, not this endpoint, to adjust logic.
     """
-    from datetime import date as date_type
- 
-    dismissed_resp = (
-        supabase
-        .schema("preorder")
-        .table("alert_dismissals")
-        .select("product_id")
-        .eq("alert_type", "no_arrival")
-        .execute()
-    )
-    dismissed_ids = [r["product_id"] for r in (dismissed_resp.data or [])]
- 
     resp = (
         supabase
         .schema("preorder")
-        .from_("vw_preorder_products")
+        .from_("vw_no_arrival_unresolved")
         .select("product_id, title, isbn, pub_date, arrival_timing, classification")
-        .eq("classification", "historical_preorder")   # ← add this, was missing
-        .eq("arrival_timing", "no_arrival")
-        .lte("pub_date", date_type.today().isoformat())
-        .gte("pub_date", "2026-02-11")                 # ← cutover boundary
+        .order("pub_date", desc=False)
         .execute()
     )
-
-    results = [r for r in (resp.data or []) if r["product_id"] not in dismissed_ids]
-    return results
+    return resp.data or []
  
  
 @router.post("/alerts/dismiss/{product_id}")
@@ -492,6 +436,10 @@ def dismiss_alert(product_id: int, payload: dict, ok: bool = Depends(require_adm
     Payload:
       - alert_type: 'late_arrival' | 'no_arrival'
       - reason: string (e.g. 'Vendor contacted', 'All orders fulfilled', 'Manual resolution')
+
+    Writes to alert_dismissals, which both vw_late_arrivals_unresolved and
+    vw_no_arrival_unresolved exclude — so dismissing immediately drops the title
+    from BOTH the count and the list.
     """
     from datetime import datetime as dt
  
