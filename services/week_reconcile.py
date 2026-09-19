@@ -8,15 +8,18 @@ date-based reconcile, so the dashboard reads it unchanged; adds a `migration`
 progress block (titles on their week profile vs still needing to move, and
 profiles now empty and ready to repurpose).
 
-Two "detach" buckets, both flagged for review (the operator clicks; detaching
-is a Shopify write with fulfillment implications):
-  * should_be_removed    — pub date has passed; the title should fall back to
-                           General.
-  * arrived_should_detach — an active preorder that has physically arrived (a
-                           live inventory_arrival record) is fulfillable now and
-                           should be detached early, even with a still-future
-                           pub date. Independent of inventory sign — a title can
-                           arrive and then oversell into negative inventory.
+The arrival signal governs first: any title with a live `inventory_arrival`
+record has physically arrived and belongs on General, not a date/week profile —
+regardless of status (`active_preorder` or `early_stock_arrival`) or inventory
+sign (it can arrive and then oversell into 0/negative). So an arrived title is
+never (re)assigned to a week profile:
+  * arrived + on a non-default profile → arrived_should_detach (detach → General)
+  * arrived + already on General        → exempt (correctly placed; no action)
+
+Other buckets:
+  * should_be_removed — pub date has passed; the title should fall back to General.
+  * exempt (fallback)  — an early-stock title in stock but without a live arrival
+                         record (edge) is still fulfillable.
 
 Titles still on their old per-date profile show as `wrong_profile` — under the
 week model that's the correct signal: they are the migration to-do list.
@@ -68,27 +71,38 @@ def compute_week_reconcile(
         if pub is None:
             report["no_pub_date"].append({"product_id": pid, "title": title, "status": status})
             continue
-        if status == "early_stock_arrival" and inv > 0:
-            report["exempt"].append({
-                "product_id": pid, "title": title, "pub_date": pub.isoformat(),
-                "status": status, "inventory": inv,
-                "current_profile": current["profile_name"] if current else "General",
-                "reason": "Early stock on hand — fulfillable without a date/week profile",
-            })
-            continue
-        # An active preorder that has physically arrived (live inventory_arrival
-        # record) is fulfillable now and should be detached from its date/week
-        # profile early, even with a still-future pub date. Checked before the
-        # pub-date and week-assignment logic so an arrived title never gets
-        # (re)assigned to a week profile; if it's already on General it's cleanly
-        # detached and needs no action.
-        if status == "active_preorder" and po.get("arrival_record_is_live"):
+        # A live inventory_arrival record means the title has physically arrived
+        # and belongs on General, not a date/week profile — whatever its status or
+        # inventory sign. Checked before the pub-date and week-assignment logic so
+        # an arrived title is never (re)assigned to a week profile.
+        if po.get("arrival_record_is_live"):
             if current:
+                # still on a date/week profile → detach it (→ General)
                 report["arrived_should_detach"].append({
                     "product_id": pid, "title": title, "pub_date": pub.isoformat(),
                     "current_profile": current["profile_name"],
                     "arrived_at": po.get("first_positive_inventory_at"),
                 })
+            else:
+                # already on General → correctly placed; surface as exempt (no action)
+                report["exempt"].append({
+                    "product_id": pid, "title": title, "pub_date": pub.isoformat(),
+                    "status": status, "inventory": inv,
+                    "current_profile": "General",
+                    "arrived_at": po.get("first_positive_inventory_at"),
+                    "reason": "Arrived (received stock) — belongs on General, not a date/week profile",
+                })
+            continue
+        # Fallback: an early-stock title flagged in stock but without a live
+        # arrival record (edge) is still fulfillable — exempt it.
+        if status == "early_stock_arrival" and inv > 0:
+            report["exempt"].append({
+                "product_id": pid, "title": title, "pub_date": pub.isoformat(),
+                "status": status, "inventory": inv,
+                "current_profile": current["profile_name"] if current else "General",
+                "arrived_at": po.get("first_positive_inventory_at"),
+                "reason": "Early stock on hand — fulfillable without a date/week profile",
+            })
             continue
         if pub <= today:
             if current:
