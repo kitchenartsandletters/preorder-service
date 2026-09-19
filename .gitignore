@@ -37,7 +37,6 @@ wheels/
 htmlcov/
 .tox/
 .nox/
-tests/
 .coverage
 .coverage.*
 .cache

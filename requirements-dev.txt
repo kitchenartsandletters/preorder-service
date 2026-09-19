@@ -1,0 +1,8 @@
+# Test/dev dependencies. Not installed in the production image (the Dockerfile
+# installs requirements.txt only).
+#
+#   pip install -r requirements-dev.txt
+#   python -m pytest
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
