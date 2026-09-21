@@ -485,9 +485,10 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> dict[int, int
     """
 
     from shopify_token import get_token_sync
+    from shopify_version import get_api_version
     shop = os.getenv("SHOP_URL")
     token = get_token_sync()
-    api_version = os.getenv("SHOPIFY_API_VERSION", "2025-10")
+    api_version = get_api_version()
     endpoint = f"https://{shop}/admin/api/{api_version}/graphql.json"
     headers = {
         "Content-Type": "application/json",

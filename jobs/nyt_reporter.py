@@ -33,6 +33,7 @@ from supabase import create_client, Client
 
 from jobs.mailtrap import send_email
 from shopify_token import get_token_sync
+from shopify_version import get_api_version
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ NYT_PORTAL_URL            = os.getenv("NYT_PORTAL_URL", "https://bestsellers.nyt
 NYT_PORTAL_USERNAME       = os.environ["NYT_PORTAL_USERNAME"]
 NYT_PORTAL_PASSWORD       = os.environ["NYT_PORTAL_PASSWORD"]
 SHOPIFY_STORE             = os.environ["SHOP_URL"]
-SHOPIFY_API_VERSION       = os.getenv("SHOPIFY_API_VERSION", "2025-01")
+SHOPIFY_API_VERSION       = get_api_version()
 
 
 def _get_supabase() -> Client:

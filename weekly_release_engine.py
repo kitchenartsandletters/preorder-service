@@ -77,7 +77,8 @@ def get_shopify_headers() -> Dict[str, str]:
     token = get_token_sync()
 
     shop = os.environ["SHOP_URL"]
-    api_version = os.environ.get("API_VERSION", "2025-10")
+    from shopify_version import get_api_version
+    api_version = get_api_version()
     endpoint = f"https://{shop}/admin/api/{api_version}/graphql.json"
     return {
         "endpoint": endpoint,
