@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-09-19
+Last updated: 2026-09-21
 
 | Document | Status |
 |---|---|
@@ -341,61 +341,6 @@ support window. As a `.js` file it is not covered by the Python version guard.
 **Needs:** the Node token-factory pattern (client-credentials) noted in the
 migration runbook, or retirement if unused.
 
-### Landmine 3: pinned Shopify API version is about to become inaccessible
-
-`2025-10` is accessible until **2026-10-16 15:00 UTC**. After that, Shopify
-serves requests with the oldest accessible stable version. The latest stable
-version is `2026-07`.
-
-**Code side done (rev2 Move 0.2 PR):**
-- All six call sites now go through `shopify_version.get_api_version()`. There
-  had been three different defaults: `2025-10`, `2025-01`, and the legacy
-  `API_VERSION` name.
-- The code default is now `2026-07`.
-- A test guards against drift.
-- `scripts/smoke_shopify_api_version.py` provides a read-only differential check.
-
-**Same deadline, other repos.** This is a separate org-wide sweep, not part of
-the pub-date phase. Status below is owner-confirmed on 2026-09-19.
-
-**Live**, so check each repo's Shopify usage and version setting:
-- `webhook-gateway`
-- `admin-dashboard`
-- `supply-chain-service`
-- `damaged-books-service` (code default `2025-10`)
-- `sr-ops-suite` (code default `2025-10`; its `docs/SHOPIFY_API_VERSIONING.md`
-  lists a worker and the admin-dashboard backend)
-- `request-service` (code default `2024-10`)
-- `door-list`
-- `edelweiss-service`
-- `backorder-service`
-
-Code defaults matter only where the env var is unset. The org code search
-matched the literal `admin/api`, so repos that build URLs differently were not
-covered. The sweep needs its own inventory.
-
-**Dead or dormant**, so ignore:
-- `NYT_weekly_and_preorder_release`
-- `preorder-slack-status`
-- `setwise_inventory_manager`
-- `shopify-reports`
-- `used-books-automation`
-- `ISBNFinder`
-- `preorder-dashboard`
-- `sandbox`
-- `shopify-packingslip-enhancements`
-- `events-directory`
-- `kal-shipping`
-- `weekly-nytimes-poaudit-reporting`
-- `request-mgmt`
-- `my-test-app`
-
-**Still open — this is what actually moves production:** set
-`SHOPIFY_API_VERSION=2026-07` on **every** Railway service that has it, after
-the smoke script passes. The GitHub workflow's `API_VERSION` secret is covered
-by Landmine 1. Resolve this landmine only once production is confirmed serving
-`2026-07`.
-
 ### Landmine 4: the alignment audit does not mirror the orchestrator
 
 `audits/shopify_alignment_audit.py` builds `ClassificationInput` without
@@ -600,9 +545,164 @@ versions, including `2026-07`, but will be removed in a future version.
 serving `2026-07`. Shipping it earlier would break inventory webhooks while
 Railway still pins `2025-10`.
 
-**Needs:** a follow-up PR after Landmine 3 is resolved.
+**Now unblocked (2026-09-21):** production serves `2026-07` (Landmine 3
+resolved). The smoke run showed this deprecation header at `2026-07` only, as
+predicted.
+
+**Needs:** the migration PR. Rerun the smoke script before merge; the header
+should disappear.
+
+### Landmine 15: `Publication.name` is deprecated (`shopify_cleanup`)
+
+`services/shopify_cleanup.py::PRODUCT_CLEANUP_STATE_QUERY` (operation
+`ProductCleanupState`) requests `resourcePublicationsV2 { publication { id name } }`.
+
+**Evidence:** the 2026-09-21 smoke run received an
+`X-Shopify-API-Deprecated-Reason: Publication.name` header on **both** `2025-10`
+and `2026-07`. So this predates the version bump; the 2026-01 → 2026-07
+release-note review did not cover it. The field still works at `2026-07`.
+
+**Risk: low.** The cleanup logic decides everything from the publication **ID**
+(`CATCH_ALL_PUBLICATION_GID`). `name` is only copied into the returned
+`publications` list for display.
+
+**Needs:** migrate to the replacement documented by Shopify. Verify it in the
+current docs at fix time; it is not assumed here. Then rerun
+`scripts/smoke_shopify_api_version.py`; the deprecation header should
+disappear.
+
+### Landmine 16: other live repos share the 2026-10-16 API-version deadline
+
+This is a separate org-wide sweep, not part of the pub-date phase. Status
+below is owner-confirmed on 2026-09-19.
+
+**Live**, so check each repo's Shopify usage and version setting:
+- `webhook-gateway`
+- `admin-dashboard`
+- `supply-chain-service`
+- `damaged-books-service` (code default `2025-10`)
+- `sr-ops-suite` (code default `2025-10`; its `docs/SHOPIFY_API_VERSIONING.md`
+  lists a worker and the admin-dashboard backend)
+- `request-service` (code default `2024-10`)
+- `door-list`
+- `edelweiss-service`
+- `backorder-service`
+
+Code defaults matter only where the env var is unset. The org code search
+matched the literal `admin/api`, so repos that build URLs differently were not
+covered. The sweep needs its own inventory.
+
+**Dead or dormant**, so ignore:
+- `NYT_weekly_and_preorder_release`
+- `preorder-slack-status`
+- `setwise_inventory_manager`
+- `shopify-reports`
+- `used-books-automation`
+- `ISBNFinder`
+- `preorder-dashboard`
+- `sandbox`
+- `shopify-packingslip-enhancements`
+- `events-directory`
+- `kal-shipping`
+- `weekly-nytimes-poaudit-reporting`
+- `request-mgmt`
+- `my-test-app`
+
+**Deadline:** `2025-10` stops being accessible at **2026-10-16 15:00 UTC**.
+For each live repo, confirm which version each deployed service actually
+requests. preorder-service's own bump is done (see the resolved Landmine 3).
 
 ### Resolved
+
+#### Landmine 3: pinned Shopify API version — RESOLVED 2026-09-21 (PR #27 + Railway change)
+
+**Code: PR #27.**
+- `shopify_version.get_api_version()` is the single source of truth, with a
+  default of `2026-07`.
+- A drift-guard test fails on any version literal outside it.
+- `scripts/smoke_shopify_api_version.py` is a read-only, differential check.
+
+**Smoke test.** Run by the owner on 2026-09-21 with production credentials,
+baseline `2025-10`, target `2026-07`:
+- **15 of 15** production read operations OK on both versions.
+- 0 regressions, 0 pre-existing errors, 0 served-version mismatches.
+- Deprecation headers:
+  - `InventoryItem.variant` at `2026-07` only (Landmine 12).
+  - `Publication.name` on both versions (Landmine 15).
+- `marketDrivenShipping=False` (Landmine 11).
+- Verdict: **SAFE TO BUMP**.
+
+**Railway change.** `SHOPIFY_API_VERSION=2026-07` was set, and the service
+redeployed at **2026-09-21 20:56:37 UTC**. The local `.env` was updated too.
+
+**Post-deploy evidence:**
+- The `order_tagger` job at 21:03 UTC called `admin/api/2026-07/graphql.json`:
+  5 requests, all `200`, 0 errors.
+- The `lifecycle_snapshotter` (21:01, 21:05) and `commitment_ledger` (21:05)
+  jobs returned `ok: true`.
+- The web service accepted and processed a webhook after the redeploy: an
+  `orders/paid` delivered successfully, with its tracking row written.
+- There have been no failed deliveries to preorder-service since 2026-09-11.
+
+**Still open, split out:** the org-wide sweep of other repos is now
+Landmine 16.
+
+The original entry is preserved below.
+
+##### (original) Landmine 3: pinned Shopify API version is about to become inaccessible
+
+`2025-10` is accessible until **2026-10-16 15:00 UTC**. After that, Shopify
+serves requests with the oldest accessible stable version. The latest stable
+version is `2026-07`.
+
+**Code side done (rev2 Move 0.2 PR):**
+- All six call sites now go through `shopify_version.get_api_version()`. There
+  had been three different defaults: `2025-10`, `2025-01`, and the legacy
+  `API_VERSION` name.
+- The code default is now `2026-07`.
+- A test guards against drift.
+- `scripts/smoke_shopify_api_version.py` provides a read-only differential check.
+
+**Same deadline, other repos.** This is a separate org-wide sweep, not part of
+the pub-date phase. Status below is owner-confirmed on 2026-09-19.
+
+**Live**, so check each repo's Shopify usage and version setting:
+- `webhook-gateway`
+- `admin-dashboard`
+- `supply-chain-service`
+- `damaged-books-service` (code default `2025-10`)
+- `sr-ops-suite` (code default `2025-10`; its `docs/SHOPIFY_API_VERSIONING.md`
+  lists a worker and the admin-dashboard backend)
+- `request-service` (code default `2024-10`)
+- `door-list`
+- `edelweiss-service`
+- `backorder-service`
+
+Code defaults matter only where the env var is unset. The org code search
+matched the literal `admin/api`, so repos that build URLs differently were not
+covered. The sweep needs its own inventory.
+
+**Dead or dormant**, so ignore:
+- `NYT_weekly_and_preorder_release`
+- `preorder-slack-status`
+- `setwise_inventory_manager`
+- `shopify-reports`
+- `used-books-automation`
+- `ISBNFinder`
+- `preorder-dashboard`
+- `sandbox`
+- `shopify-packingslip-enhancements`
+- `events-directory`
+- `kal-shipping`
+- `weekly-nytimes-poaudit-reporting`
+- `request-mgmt`
+- `my-test-app`
+
+**Still open — this is what actually moves production:** set
+`SHOPIFY_API_VERSION=2026-07` on **every** Railway service that has it, after
+the smoke script passes. The GitHub workflow's `API_VERSION` secret is covered
+by Landmine 1. Resolve this landmine only once production is confirmed serving
+`2026-07`.
 
 #### Landmine 8: test suite baseline is red — RESOLVED in PR #25 (rev2 Move 0.1)
 
