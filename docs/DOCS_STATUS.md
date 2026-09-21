@@ -20,7 +20,7 @@ Last updated: 2026-09-19
 | `docs/DOCS_STATUS.md` (this file) | **Authoritative** for document status only. |
 | `docs/shipping_profiles.md` | **Current and authoritative** for the date-based shipping-profile create/repurpose flow (zones, carrier IDs, `includeAllProvinces`). Written and verified this engagement. Its Auth section correctly states client-credentials. |
 | `docs/phase_unified_pubdate_and_tag_simplification.md` | **SUPERSEDED (2026-09-19) by `docs/phase_unified_pubdate_rev2.md`.** Kept for the trail — do NOT build from it. Its premises carry errata **E1–E7** (section below): it proposed a duplicate history table, assumed live date tags, missed the DB override source, rested on a false "override always means earlier" premise, understated the `preorder` tag's coupling, omitted several engine/wiring touch-points, and did not account for Shopify-side and storefront consumers. |
-| `docs/phase_unified_pubdate_rev2.md` | **CURRENT — authoritative plan for the unified pub-date / override-collapse / tag-simplification phase. Not yet implemented.** §2 (current state) verified 2026-09-19 against `main` `6677400`, the production `preorder` schema, `admin-dashboard` `ac7609a`, and shopify.dev; everything else describes FUTURE state. Contains the locked decisions D1–D10 and blocking gates G1–G4 (G3 enforced in code). Record gate sign-offs in its §5.1 gate log. |
+| `docs/phase_unified_pubdate_rev2.md` | **CURRENT — authoritative plan for the unified pub-date / override-collapse / tag-simplification phase. Not yet implemented.** §2 (current state) verified 2026-09-19 against `main` `6677400`, the production `preorder` schema, `admin-dashboard` `ac7609a`, and shopify.dev; everything else describes FUTURE state. Contains the locked decisions D1–D10 and blocking gates G1–G4 (G3 enforced in code). Record gate sign-offs in its §5.1 gate log. **Amended 2026-09-21 by A1–A2** (section below): new blocking gate **G5** before any bulk product edit, and the nightly reconciliation sweep becomes required. |
 | `docs/Preorder Classification Specification.md` | **Not yet re-verified.** The engine has changed since it was written (added `anomaly_stale_collection`, delayed-import hold, `>=`/`<=` pub-date boundaries, `has_inventory_arrival` gates). Treat `classification/engine.py` as truth; audit this doc against it before relying on it. |
 | `docs/Trust_Tier_Labeling.md` | **Not yet re-verified.** Referenced by data-confidence logic; may predate several arrival/reporting changes. |
 | `docs/test_matrix.md` | **Not yet re-verified.** |
@@ -126,6 +126,148 @@ which is built on the corrected facts. Counts are 2026-09-19 snapshots.
 
 ---
 
+## Amendments to `phase_unified_pubdate_rev2.md`
+
+These amendments are recorded here, per this file's convention of not
+rewriting large docs inline. They are binding on the rev2 plan. They come from
+the webhook-gateway investigation (Incident I1, below).
+
+- **A1 — New blocking gate G5: webhook ingestion must survive a bulk edit.**
+  - *Blocks:* rev2 step 2d (the date-tag strip, about 9,100 `products/update`
+    events) and any other bulk product edit made by this phase.
+  - *Evidence:* on 2026-08-29 a bulk edit of about 6,000 products produced
+    about 22,000 `products/update` events.
+    - preorder-service answered with Railway edge 502 and 429 responses.
+    - The gateway gave up on 22,178 of them and never retried.
+  - *Pass condition, at least one of:*
+    - (a) the preorder-service webhook route acknowledges immediately and does
+      the reclassification work asynchronously; or
+    - (b) the strip is throttled to a rate proven safe in a pilot batch.
+  - *Required in both cases:* a pilot batch shows **zero failed deliveries**
+    to preorder-service in `public.external_deliveries`.
+  - *Enforced in code:* extend the G3 guard in the strip script. After each
+    batch, abort if `public.external_deliveries` has any `failed` row for the
+    preorder-service target since the batch started.
+- **A2 — The nightly reconciliation sweep is required, not optional.**
+  - Webhook delivery to preorder-service is **not reliable**: 22,890 events
+    were lost between 2026-04-27 and 2026-09-11, and none was replayed.
+  - The sweep planned in rev2 §3.6 is therefore a correctness requirement for
+    Move 1.
+  - Direct-edit detection must not depend on webhooks alone.
+
+---
+
+## Incidents and data repairs
+
+### I1 — webhook-gateway delivery failures (investigated 2026-09-21)
+
+**Symptom.** `webhook-gateway` has **6,200 open GitHub issues**, all titled
+"External Delivery Failure: <topic>". They are automated: one issue per
+delivery that failed after retries.
+
+**Source data.** `public.external_deliveries` and `public.webhook_logs` in the
+webhook-gateway Supabase project, which holds the payloads.
+
+**Failed deliveries by target**, all-time as of 2026-09-21:
+
+| Target | Failed | Succeeded |
+|---|---|---|
+| preorder-service | 22,890 (2026-04-27 → 2026-09-11) | 121,546 |
+| backorder-service | 53,081 (2026-06-18 → 2026-09-15) | 65,457 |
+| used-books-service | 42 (ends 2026-06-17) | 43,021 |
+
+**preorder-service failures by episode:**
+
+| Date | Failed events |
+|---|---|
+| 2026-08-29 | ~22,180: 13,867 × 502 `upstream error`, 8,075 × 429 `rate limited`, 145 connection failures, 91 × 503 |
+| 2026-05-10 → 05-11 | 672 |
+| 2026-06-17 | 21 |
+| 2026-06-08 | 7 |
+| 2026-09-11 | 6 |
+
+The response bodies come from Railway's edge, not the app.
+
+**Cause of the 2026-08-29 burst:** a bulk edit touching about 6,000 products at
+around 21:24 ET on 2026-08-28. The owner believes the source is
+`supply-chain-service`; this is **not yet verified** against its commit
+history.
+
+**Impact on preorder data:**
+- **Product classification: no lasting harm.**
+  - 5,985 products lost at least one `products/update`.
+  - 5,845 have been reclassified since, by a later update.
+  - The remaining 140 are genuine non-preorders; none of their lost payloads
+    carried the `preorder` tag.
+- **Commitment ledger: 13 preorder orders lost events.** 11 needed repair; the
+  other 2 (#80305, #80642) were already complete.
+  - Mediterranean All the Way (active preorder, pub 2026-10-20): 3 open
+    commitments were missing entirely.
+  - 7 historical titles each had a line netting −1: the fulfillment was
+    recorded but not the creation.
+  - #80284 (Oteque) lost its create event, and its fulfillment was also
+    unrecorded (see Landmine 14).
+- **None of the 22,890 failed events was ever recovered.** No later success
+  exists for the same event, and none was replayed.
+
+**Resolution:**
+- Ledger repaired: see R1.
+- Gate G5 added: see A1.
+- Gateway root causes recorded as Landmine 13.
+- The 6,200 alert issues can be bulk-closed now that they are recorded here.
+  That is owner-approved, and belongs to the webhook-gateway repo.
+
+### R1 — ledger repair for 10 single-line orders (executed 2026-09-21)
+
+**What was done.**
+- 10 rows were inserted into `preorder.tracking` at 2026-09-21 19:23:54 UTC,
+  one per lost `orders/create` event.
+- Each was rebuilt from the original payload in `public.webhook_logs`, in the
+  same shape the webhook handler writes: fresh `event_id`,
+  `source_service='gateway'`, status `pending`.
+- Headers carry `X-Repair-Source-Gateway-Event` = the original gateway event.
+- `processing_notes` starts with `repair 2026-09-21:`.
+- The ledger builder (a 5-minute cron) derived the ledger rows on its
+  19:25 UTC run.
+
+**Why it is safe to re-run.**
+- The insert was atomic, with guards: exactly 10 source orders, each
+  single-line, and no pre-existing tracking row.
+- The ledger's own constraints block duplicates, notably
+  `commitment_positive_once (order_id, line_item_id)`.
+
+**Result, verified per line:**
+- **Mediterranean All the Way:** #80289, #80292 and #80303 each now net +1,
+  as open commitments.
+- **Historical lines, each now netting 0:**
+  - #80281 The Great Book of Chocolate
+  - #80288 Eat (Like) the Rich
+  - #80291 The Hot Dog Cookbook
+  - #80295 Ammazza!
+  - #80296 Jacques Pépin Complete Techniques
+  - #80297 Beyond Peaks
+  - #80300 The Noma Guide to Building Flavour
+- The repaired rows carry the original order dates (2026-05-10/11), so they
+  count in the correct presale windows.
+
+**Find the repair rows:**
+
+```sql
+select * from preorder.tracking where processing_notes like 'repair 2026-09-21:%';
+```
+
+**Outstanding:**
+1. **#80284 (Oteque, 7-line order)** is deliberately **not** repaired yet.
+   - Its Oteque line shipped, but the fulfillment is also missing
+     (Landmine 14).
+   - Adding only the +1 would create a false open commitment.
+   - Fix it together with Landmine 14.
+2. **Frozen lifecycle snapshots:** the 7 historical titles' presale totals are
+   still one short each. Snapshots are write-once, and none were modified.
+   Decide on recomputation with Landmine 14, which affects the same snapshots.
+
+---
+
 ## The authoritative auth contract (verified against `shopify_token.py`)
 
 This is the one thing that has bitten multiple threads, so it is stated here as
@@ -208,6 +350,74 @@ Move 1g.
 No migration in `db/migrations/` creates `preorder.pubdate_history`. It was made
 out-of-band. **Needs:** a baseline migration capturing the live DDL, scheduled
 as rev2 Move 0.6.
+
+### Landmine 13: webhook delivery to preorder-service is lossy (found 2026-09-21)
+
+See Incident I1 for the evidence.
+
+**Contributing causes:**
+- **preorder-service does the work inside the request.**
+  `routes/webhooks.py::_handle` awaits the full reclassification: two Shopify
+  fetches, classification and DB writes, before responding. Under a burst,
+  Railway's edge returns 502 and 429.
+- **The gateway does not retry effectively or replay.**
+  - `external_deliveries.attempt_count` is always 0, although the issue text
+    says "Attempt: 3".
+  - No failed delivery has ever been replayed.
+- **The gateway sends an empty `X-Gateway-Event-ID`.**
+  - The handler falls back to a random UUID.
+  - So preorder-service cannot recognize a redelivered webhook.
+  - Only ledger constraints prevent double-counting.
+- **The gateway opens one GitHub issue per failed delivery.** That produced
+  6,200 open issues.
+
+**Needs:**
+- In preorder-service: fast-acknowledge the webhook and process it
+  asynchronously. This is gate G5, A1.
+- In webhook-gateway, a separate repo: working retries and replay, a real
+  event ID header, and aggregated alerting instead of one issue per failure.
+
+### Landmine 14: multi-line fulfillments under-recorded in the commitment ledger (found 2026-09-21)
+
+**Mechanism:**
+- For `orders/create`, the webhook handler writes **one tracking row per line
+  item**.
+- For `orders/fulfilled`, `_extract_order_facts` returns **a single row for
+  the whole order**.
+- The ledger builder then derives a −row for every fulfilled line from the
+  payload.
+- But `ledger_tracking_unique (tracking_id)` allows only one ledger row per
+  tracking row, and the insert is `ON CONFLICT DO NOTHING`. So **only the
+  first line's fulfillment is recorded; the rest are silently dropped.**
+
+**Evidence, last 30 days as of 2026-09-21:**
+
+| Order type | Fulfilled preorder lines | With a −row |
+|---|---|---|
+| Single-line | 924 | **924** |
+| Multi-line (148 orders) | 228 | **80** |
+
+So **146 shipped units were never subtracted** in 30 days alone. Creations are
+not affected: 664 of 664 multi-line create lines are recorded.
+
+**Impact:**
+- Open commitments are **overstated** for any title sold in multi-line orders.
+- Lifecycle snapshots close only when commitment is ≤ 0, so affected titles
+  may **never close**.
+- Dashboard commitment figures are inflated.
+
+**Unverified:** whether `orders/paid`, `orders/cancelled` and
+`refunds/create` share the defect. They take the same single-row path in
+`_extract_order_facts`. How far back the defect goes is also unknown.
+
+**Needs:**
+1. A dedicated investigation: the scope by topic and the full history.
+2. A fix, either in the handler (one tracking row per line for every order
+   topic) or in the builder (key idempotency on the per-topic natural keys
+   that already exist, not on `tracking_id`).
+3. A backfill of the missed rows from the stored payloads.
+4. A decision on recomputing affected lifecycle snapshots.
+5. Then complete R1's outstanding order, #80284.
 
 ### Landmine 9: `/approvals` router is mounted with NO authentication
 
