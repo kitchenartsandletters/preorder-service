@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from shopify_token import get_token_manager
+from shopify_version import get_api_version
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +49,9 @@ class ShopifyClient:
         if not self.shop_url:
             raise ValueError("SHOP_URL is not set")
 
-        # This repo reads the version under two names (API_VERSION vs
-        # SHOPIFY_API_VERSION). Accept both; standardize on SHOPIFY_API_VERSION.
-        self.api_version = (
-            os.getenv("SHOPIFY_API_VERSION")
-            or os.getenv("API_VERSION")
-            or "2025-10"
-        )
+        # Single source of truth: shopify_version.get_api_version()
+        # (SHOPIFY_API_VERSION, then legacy API_VERSION, then the default).
+        self.api_version = get_api_version()
 
         domain = self.shop_url.split("://", 1)[-1].rstrip("/")
         self.endpoint = f"https://{domain}/admin/api/{self.api_version}/graphql.json"
