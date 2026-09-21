@@ -283,9 +283,12 @@ the reference:
     in `shopify_client.py` (token injection, 401 refresh-retry, backoff).
   - **Sync** scripts / sync routes → `get_token_sync()` (returns a short-lived
     token; put it in the `X-Shopify-Access-Token` header).
-- The version env var is **`SHOPIFY_API_VERSION`** (default `2025-10`). The old
-  name `API_VERSION` is superseded; a file reading `API_VERSION` may silently
-  drift to a different default.
+- The version resolves in exactly one place: **`shopify_version.get_api_version()`**.
+  It reads `SHOPIFY_API_VERSION`, then the legacy `API_VERSION`, then the code
+  default (`2026-07` since rev2 Move 0.2). `tests/test_shopify_api_version.py`
+  fails if any other Python file hard-codes a version or reads these env vars.
+  In production, the `SHOPIFY_API_VERSION` variable on each Railway service
+  **overrides** the code default.
 - `SHOP_URL` must be the `.myshopify.com` host (e.g. `castironbooks.myshopify.com`),
   not the custom domain. Use `normalize_domain()` from `shopify_token.py`.
 
@@ -296,32 +299,102 @@ the reference:
 Found via `grep SHOPIFY_ACCESS_TOKEN` across the repo while building this file.
 These are **active**, not just documentation errors.
 
-### Landmine 1: `.github/workflows/weekly_release_engine.yml` passes retired secrets
+### Landmine 1: dead weekly-report workflow and scripts (retire, do not repair)
 
-The workflow injects `SHOPIFY_ACCESS_TOKEN` and `API_VERSION` into
-`weekly_release_engine.py`. But that script now authenticates via
-`get_token_sync()` (client-credentials) and reads `SHOPIFY_API_VERSION`. So the
-workflow supplies a retired token var and the wrong version var name. If this
-workflow still runs on schedule it is either failing or running on stale/absent
-config. **Needs:** replace `SHOPIFY_ACCESS_TOKEN` with `SHOPIFY_CLIENT_ID` +
-`SHOPIFY_CLIENT_SECRET`, and `API_VERSION` with `SHOPIFY_API_VERSION`, in the
-workflow's env block (and add the corresponding GitHub Actions secrets).
-Not fixed here — flagged for a dedicated change so it can be tested.
+**Owner-confirmed 2026-09-19:** the weekly report is an earlier phase of this
+service that was allowed to decay. It is not produced.
+
+The pieces:
+- `.github/workflows/weekly_release_engine.yml` (Sundays 10:15 UTC) runs the
+  root `weekly_release_engine.py --mark-reported`.
+- It passes the retired `SHOPIFY_ACCESS_TOKEN` and the legacy `API_VERSION`
+  secret. It does not pass the `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET`
+  that `get_token_sync()` requires.
+
+GitHub Actions history shows **all 13 recorded runs failed**, weekly from
+2026-03-22 to 2026-06-14, with **no runs since**. The step-level error could
+not be read (rate-limited), and neither could whether the workflow is now
+disabled.
+
+`services/weekly_release_engine.py` is part of the same dead phase. Nothing
+imports it; two comments reference its logic.
+
+**Not affected:** `preorder.release_state` is still written by the live flow:
+- `routes/admin_preorders.py` upserts it.
+- `routes/admin_nyt.py` and `jobs/nyt_reporter.py` set `nyt_uploaded_at`.
+
+Last write was 2026-09-14. Views reading it: `vw_preorder_products`
+(`released_to_reporting`), `vw_candidate_release_base`,
+`vw_reportable_preorders`.
+
+**Needs:** a dedicated cleanup PR that retires the workflow and both
+weekly-engine scripts. Confirm each is unreferenced first. Deleting the
+workflow file prevents it from being re-enabled by accident.
 
 ### Landmine 2: `audit_preorder_product.js` (Node) reads retired env
 
 Reads `process.env.SHOPIFY_ACCESS_TOKEN` and `SUPABASE_SERVICE_KEY` (the old
 Supabase key name; standard is `SUPABASE_SERVICE_ROLE_KEY`). Node was the
 deferred track in the token migration. This script will not authenticate as-is.
+It also hard-codes Admin API version `2025-01`, which is outside Shopify's
+support window. As a `.js` file it is not covered by the Python version guard.
 **Needs:** the Node token-factory pattern (client-credentials) noted in the
 migration runbook, or retirement if unused.
 
 ### Landmine 3: pinned Shopify API version is about to become inaccessible
 
-`SHOPIFY_API_VERSION` defaults to `2025-10`, which is accessible until
-**2026-10-16 15:00 UTC**. After that, Shopify serves requests with the oldest
-accessible stable version. The latest stable version is `2026-07`. **Needs:** a
-version bump plus a smoke test. This is scheduled as rev2 Move 0.2.
+`2025-10` is accessible until **2026-10-16 15:00 UTC**. After that, Shopify
+serves requests with the oldest accessible stable version. The latest stable
+version is `2026-07`.
+
+**Code side done (rev2 Move 0.2 PR):**
+- All six call sites now go through `shopify_version.get_api_version()`. There
+  had been three different defaults: `2025-10`, `2025-01`, and the legacy
+  `API_VERSION` name.
+- The code default is now `2026-07`.
+- A test guards against drift.
+- `scripts/smoke_shopify_api_version.py` provides a read-only differential check.
+
+**Same deadline, other repos.** This is a separate org-wide sweep, not part of
+the pub-date phase. Status below is owner-confirmed on 2026-09-19.
+
+**Live**, so check each repo's Shopify usage and version setting:
+- `webhook-gateway`
+- `admin-dashboard`
+- `supply-chain-service`
+- `damaged-books-service` (code default `2025-10`)
+- `sr-ops-suite` (code default `2025-10`; its `docs/SHOPIFY_API_VERSIONING.md`
+  lists a worker and the admin-dashboard backend)
+- `request-service` (code default `2024-10`)
+- `door-list`
+- `edelweiss-service`
+- `backorder-service`
+
+Code defaults matter only where the env var is unset. The org code search
+matched the literal `admin/api`, so repos that build URLs differently were not
+covered. The sweep needs its own inventory.
+
+**Dead or dormant**, so ignore:
+- `NYT_weekly_and_preorder_release`
+- `preorder-slack-status`
+- `setwise_inventory_manager`
+- `shopify-reports`
+- `used-books-automation`
+- `ISBNFinder`
+- `preorder-dashboard`
+- `sandbox`
+- `shopify-packingslip-enhancements`
+- `events-directory`
+- `kal-shipping`
+- `weekly-nytimes-poaudit-reporting`
+- `request-mgmt`
+- `my-test-app`
+
+**Still open — this is what actually moves production:** set
+`SHOPIFY_API_VERSION=2026-07` on **every** Railway service that has it, after
+the smoke script passes. The GitHub workflow's `API_VERSION` secret is covered
+by Landmine 1. Resolve this landmine only once production is confirmed serving
+`2026-07`.
 
 ### Landmine 4: the alignment audit does not mirror the orchestrator
 
@@ -469,6 +542,65 @@ convention.
 
 **Needs:** a separate cleanup: lazy clients and a single shared admin-auth
 dependency. It is not blocking.
+
+### Landmine 11: shipping-profile system vs. market-driven shipping (hard deadline 2027-07-01)
+
+Shopify is moving merchant shipping configuration out of delivery profiles and
+into Markets ("market-driven shipping"). Source: the Shopify upgrade guide,
+`shopify.dev/docs/apps/build/orders-fulfillment/market-driven-shipping/upgrade-your-app`,
+read 2026-09-19. Shopify labels the dates as targets that may shift.
+
+**Timeline:**
+- **2026-10-01:** merchants can opt in. Shopify does not move a merchant
+  automatically until it confirms the merchant's apps are compatible.
+  **Manual opt-in before the app is upgraded causes breakage.**
+- **2027-07-01:** market-driven shipping is on for **all** shops.
+
+**Failure mode on a migrated shop:**
+- Merchant-owned `deliveryProfile(s)` reads may return a stale snapshot.
+- `deliveryProfileCreate`/`Update`/`Remove` writes on merchant profiles may
+  **succeed with no error but change nothing**.
+- App-owned delivery profiles are unaffected.
+- Shopify's test: anything that targets a profile not created by your app is a
+  merchant-profile interaction.
+
+**Exposure of `services/shipping_profiles.py`:**
+- It **reads** all profiles, including the merchant default.
+- It **clones carrier config** from a reference profile
+  (`SHIPPING_REFERENCE_PROFILE_GID`, likely merchant-owned).
+- It **creates and repurposes** week profiles.
+- Whether the week profiles count as app-owned in Shopify's model is **not yet
+  verified**.
+
+**Detection:** `shop { features { marketDrivenShipping } }`. The smoke script
+reports it; this is informational and never blocks.
+
+**Needs:**
+1. **Now:** no one opts the shop into market-driven shipping.
+2. **Plan a migration before 2027-07-01.** Shopify recommends an app-owned
+   delivery profile ("app-profile integration"), which can use `coversAllItems`.
+   Test it on a dev store with the feature preview.
+3. **Submit Shopify's compatibility attestation** once migrated.
+
+This is independent of the API version bump. It is triggered by shop state, not
+by version.
+
+### Landmine 12: `InventoryItem.variant` is deprecated (inventory-webhook path)
+
+`shopify_service.INVENTORY_ITEM_TO_PRODUCT_QUERY` uses
+`inventoryItem { variant { product { id } } }`. This query maps inventory
+webhooks to products and feeds arrival records.
+
+Shopify deprecated `InventoryItem.variant` in **2026-01** in favor of the
+`InventoryItem.variants` connection. `variant` still works in all supported
+versions, including `2026-07`, but will be removed in a future version.
+
+**Ordering constraint:** the `variants` connection does **not** exist before
+`2026-01`. The migration must ship only **after** production is confirmed
+serving `2026-07`. Shipping it earlier would break inventory webhooks while
+Railway still pins `2025-10`.
+
+**Needs:** a follow-up PR after Landmine 3 is resolved.
 
 ### Resolved
 

@@ -33,6 +33,7 @@ from supabase import create_client, Client
 
 from jobs.mailtrap import send_email
 from shopify_token import get_token_sync
+from shopify_version import get_api_version
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ UTC = timezone.utc
 
 ENGINE_VERSION = "nyt-reporter-v1"
 
-# ── Env ───────────────────────────────────────────────────────────────────────
+# ── Env ─────────────────────────────────────────────────────────────────────────
 SUPABASE_URL              = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 ADMIN_DASHBOARD_URL       = os.getenv("ADMIN_DASHBOARD_URL", "https://admin.kitchenartsandletters.com")
@@ -49,7 +50,7 @@ NYT_PORTAL_URL            = os.getenv("NYT_PORTAL_URL", "https://bestsellers.nyt
 NYT_PORTAL_USERNAME       = os.environ["NYT_PORTAL_USERNAME"]
 NYT_PORTAL_PASSWORD       = os.environ["NYT_PORTAL_PASSWORD"]
 SHOPIFY_STORE             = os.environ["SHOP_URL"]
-SHOPIFY_API_VERSION       = os.getenv("SHOPIFY_API_VERSION", "2025-01")
+SHOPIFY_API_VERSION       = get_api_version()
 
 
 def _get_supabase() -> Client:
@@ -73,7 +74,7 @@ def _sales_week_bounds() -> tuple[date, date]:
     return week_start, week_end
 
 
-# ── Idempotency ───────────────────────────────────────────────────────────────
+# ── Idempotency ─────────────────────────────────────────────────────────────────────
 
 def _already_uploaded(sb: Client, week_start: date) -> bool:
     result = (
@@ -88,7 +89,7 @@ def _already_uploaded(sb: Client, week_start: date) -> bool:
     return bool(result.data)
 
 
-# ── Data fetching ─────────────────────────────────────────────────────────────
+# ── Data fetching ───────────────────────────────────────────────────────────────────
 
 def _fetch_queued_titles(sb: Client, week_start: date, week_end: date) -> List[Dict]:
     """
@@ -211,7 +212,7 @@ def _fetch_shopify_week_sales(week_start: date, week_end: date) -> Dict[int, int
     return sales
 
 
-# ── CSV generation ────────────────────────────────────────────────────────────
+# ── CSV generation ──────────────────────────────────────────────────────────────────
 
 def _generate_csv(
     queued: List[Dict],
@@ -280,7 +281,7 @@ def _generate_csv(
     return buf.getvalue(), filename, len(rows)
 
 
-# ── Playwright upload ─────────────────────────────────────────────────────────
+# ── Playwright upload ─────────────────────────────────────────────────────────────────
 
 def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Optional[str], Optional[str]]:
     """
@@ -381,7 +382,7 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
         return False, reason, screenshot_b64
 
 
-# ── Supabase writes ───────────────────────────────────────────────────────────
+# ── Supabase writes ─────────────────────────────────────────────────────────────────
 
 def _mark_titles_uploaded(sb: Client, queued: List[Dict]) -> None:
     now = datetime.now(UTC).isoformat()
@@ -421,7 +422,7 @@ def _write_log(
     ).execute()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ─────────────────────────────────────────────────────────────────────
 
 async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
     """Called by jobs/run.py --job nyt_reporter."""
