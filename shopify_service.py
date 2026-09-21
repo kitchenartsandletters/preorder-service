@@ -159,14 +159,38 @@ async def fetch_product_payload(
 INVENTORY_ITEM_TO_PRODUCT_QUERY = """
 query InventoryItemToProduct($id: ID!) {
   inventoryItem(id: $id) {
-    variant {
-      product {
-        id
+    variants(first: 10) {
+      nodes {
+        product {
+          id
+        }
       }
     }
   }
 }
 """
+
+
+def _product_gids_from_inventory_item(inventory_item: Dict[str, Any]) -> List[str]:
+    """
+    Distinct product GIDs reachable from an inventory item, in response order.
+
+    Reads the `InventoryItem.variants` connection. The single-object
+    `InventoryItem.variant` field was deprecated in Admin API 2026-01 (see
+    docs/DOCS_STATUS.md Landmine 12). Shopify currently returns one node here,
+    but documents that multiple variants may share an inventory item in the
+    future, so the whole connection is handled (`nodes` or `edges`).
+    """
+    connection = inventory_item.get("variants") or {}
+    nodes = connection.get("nodes")
+    if nodes is None:
+        nodes = [e.get("node") for e in (connection.get("edges") or []) if isinstance(e, dict)]
+    gids: List[str] = []
+    for node in nodes or []:
+        gid = ((node or {}).get("product") or {}).get("id")
+        if gid and gid not in gids:
+            gids.append(gid)
+    return gids
 
 
 async def build_product_metadata_from_shopify(
@@ -212,14 +236,19 @@ async def build_product_metadata_from_shopify(
             inventory_item = resp.get("inventoryItem")
         if not inventory_item:
             raise ValueError(f"Inventory item not found: {inventory_item_id}")
-        product_gid = (
-            (inventory_item.get("variant") or {})
-            .get("product", {})
-            .get("id")
-        )
-        if not product_gid:
+        product_gids = _product_gids_from_inventory_item(inventory_item)
+        if not product_gids:
             raise ValueError(f"Could not resolve product from inventory_item_id={inventory_item_id}")
-        product_id = int(product_gid.split("/")[-1])
+        if len(product_gids) > 1:
+            # Refuse to guess: attributing a stock change to the wrong title
+            # would corrupt its preorder state. Callers log and skip, as they
+            # do for an unresolvable item.
+            raise ValueError(
+                f"inventory_item_id={inventory_item_id} is shared by variants of "
+                f"{len(product_gids)} products ({', '.join(product_gids)}); "
+                "refusing to attribute the inventory change to just one of them"
+            )
+        product_id = int(product_gids[0].split("/")[-1])
 
     # Fetch full product
     product = await fetch_product_payload(client=client, product_id=product_id)
