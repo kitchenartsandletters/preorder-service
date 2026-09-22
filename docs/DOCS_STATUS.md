@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-09-21
+Last updated: 2026-09-22
 
 | Document | Status |
 |---|---|
@@ -349,12 +349,6 @@ is therefore wrong for any title with an arrival record, including early stock,
 stale collection, PDP cleanup and delayed import. **Needs:** a shared input
 builder, scheduled as rev2 Move 0.4.
 
-### Landmine 5: stub classifier in `classification/types.py`
-
-The file defines a second `classify_preorder_product` that returns a placeholder
-`anomaly_missing_tag`. Nothing imports it today. Importing the wrong one would
-silently misclassify everything. **Needs:** deletion, scheduled as rev2 Move 0.3.
-
 ### Landmine 6: dead, broken override write path
 
 `override_service.update_override_date_and_reclassify` has no route. If it were
@@ -428,6 +422,11 @@ not affected: 664 of 664 multi-line create lines are recorded.
 `refunds/create` share the defect. They take the same single-row path in
 `_extract_order_facts`. How far back the defect goes is also unknown.
 
+**Scheduled (owner, 2026-09-22):** after the Landmine 9 unmount and **before**
+rev2 Move 0.4. It is the only open item actively corrupting live data, and the
+dashboard shows the inflated figures. It starts read-only; any fix or backfill
+is proposed for approval first, as the R1 repair was.
+
 **Needs:**
 1. A dedicated investigation: the scope by topic and the full history.
 2. A fix, either in the handler (one tracking row per line for every order
@@ -452,9 +451,10 @@ Found from code on 2026-09-19. It was deliberately not probed against
 production. No callers exist in this repo or in `admin-dashboard`, and the table
 is dormant (1 row, last updated 2025-11-10).
 
-**Needs:** an owner decision, then a dedicated PR. The likely fix is to unmount
-the router; the alternative is to add the `admin_*` `require_admin_token`. It is
-not part of the pub-date phase. Its `override_pub_date` column feeds only
+**Owner decision, 2026-09-22: unmount the router.** A dedicated PR removes the
+`include_router` line from `main.py`. Re-confirm there are still no callers
+first, and after deploy check that the routes return 404. It is not part of the
+pub-date phase. Its `override_pub_date` column feeds only
 `vw_pending_approvals`, not the classifier.
 
 ### Landmine 10: import-time env reads, and admin-auth outliers
@@ -518,7 +518,8 @@ read 2026-09-19. Shopify labels the dates as targets that may shift.
   verified**.
 
 **Detection:** `shop { features { marketDrivenShipping } }`. The smoke script
-reports it; this is informational and never blocks.
+reports it; this is informational and never blocks. Checked 2026-09-21 and
+2026-09-22: `marketDrivenShipping=False`.
 
 **Needs:**
 1. **Now:** no one opts the shop into market-driven shipping.
@@ -529,28 +530,6 @@ reports it; this is informational and never blocks.
 
 This is independent of the API version bump. It is triggered by shop state, not
 by version.
-
-### Landmine 12: `InventoryItem.variant` is deprecated (inventory-webhook path)
-
-`shopify_service.INVENTORY_ITEM_TO_PRODUCT_QUERY` uses
-`inventoryItem { variant { product { id } } }`. This query maps inventory
-webhooks to products and feeds arrival records.
-
-Shopify deprecated `InventoryItem.variant` in **2026-01** in favor of the
-`InventoryItem.variants` connection. `variant` still works in all supported
-versions, including `2026-07`, but will be removed in a future version.
-
-**Ordering constraint:** the `variants` connection does **not** exist before
-`2026-01`. The migration must ship only **after** production is confirmed
-serving `2026-07`. Shipping it earlier would break inventory webhooks while
-Railway still pins `2025-10`.
-
-**Now unblocked (2026-09-21):** production serves `2026-07` (Landmine 3
-resolved). The smoke run showed this deprecation header at `2026-07` only, as
-predicted.
-
-**Needs:** the migration PR. Rerun the smoke script before merge; the header
-should disappear.
 
 ### Landmine 15: `Publication.name` is deprecated (`shopify_cleanup`)
 
@@ -612,7 +591,107 @@ covered. The sweep needs its own inventory.
 For each live repo, confirm which version each deployed service actually
 requests. preorder-service's own bump is done (see the resolved Landmine 3).
 
+### Landmine 17: `inventory_item_map` is stale (low priority — no current impact)
+
+`preorder.inventory_item_map` was last updated **2026-03-02**. Of the 205
+preorder-family titles, **72 are missing from it**, including many active
+preorders (checked 2026-09-22). It is filled by
+`populate_inventory_item_map.py`, which nothing runs on a schedule.
+
+**No current impact.** Arrival records have two writers, and only one uses the
+map:
+- `persistence.persist_inventory_arrival`, called by the orchestrator during
+  classification. This is the live webhook path; it resolves the product
+  through Shopify and needs no map.
+- `build_inventory_arrival.py`, a job that looks the product up **via the
+  map** (`MAP_LOOKUP_SQL`).
+
+Checked 2026-09-22: **zero** preorder-family titles have stock on hand but no
+arrival record, mapped or not. The live path covers them.
+
+**Needs:** nothing urgent. Either re-run the populate script and schedule it,
+or retire the map-based job if the live path fully supersedes it. Decide before
+anything new is built on the map, since arrival records gate
+`has_inventory_arrival` and lifecycle closure.
+
 ### Resolved
+
+#### Landmine 12: `InventoryItem.variant` deprecation — RESOLVED 2026-09-22 (PR #29)
+
+**Fix.** `shopify_service.INVENTORY_ITEM_TO_PRODUCT_QUERY` now reads the
+`InventoryItem.variants` connection. `_product_gids_from_inventory_item`
+collects the distinct products across the returned variants (`nodes` or
+`edges`) and **refuses to guess** if an item ever maps to more than one
+product, rather than risk crediting stock to the wrong title.
+
+**Pre-merge smoke run** (owner, 2026-09-21, production credentials, 2026-07):
+- `shopify_service.py::InventoryItemToProduct` **OK**, served `2026-07`.
+- The `InventoryItem.variant` deprecation header is **gone**.
+- `Publication.name` is the only remaining deprecation (Landmine 15).
+
+**Live verification (2026-09-22, ~20 hours after deploy).** Of the webhooks
+delivered since the merge at 2026-09-21 21:23 UTC:
+- **50 `inventory_levels/update` events, all delivered successfully**, and 173
+  deliveries of all topics with zero failures.
+- Of the 29 events whose inventory item is present in `inventory_item_map`,
+  **all 29** products were reclassified within seconds of delivery; none was
+  missed.
+- The other 21 events reference items missing from that stale map
+  (Landmine 17), so they cannot be joined directly. Most show a
+  classification in the same window. The few that do not are explained by
+  `last_classified_at` being overwritten by a later classification of the same
+  product — for example inventory item `43643788263557`, whose most recent
+  event resolved to "Eat (Like) the Rich".
+
+A resolution failure would log `Reclassification failed` and leave the product
+unclassified. No such gap was found.
+
+The original entry is preserved below.
+
+##### (original) Landmine 12: `InventoryItem.variant` is deprecated (inventory-webhook path)
+
+`shopify_service.INVENTORY_ITEM_TO_PRODUCT_QUERY` uses
+`inventoryItem { variant { product { id } } }`. This query maps inventory
+webhooks to products and feeds arrival records.
+
+Shopify deprecated `InventoryItem.variant` in **2026-01** in favor of the
+`InventoryItem.variants` connection. `variant` still works in all supported
+versions, including `2026-07`, but will be removed in a future version.
+
+**Ordering constraint:** the `variants` connection does **not** exist before
+`2026-01`. The migration must ship only **after** production is confirmed
+serving `2026-07`. Shipping it earlier would break inventory webhooks while
+Railway still pins `2025-10`.
+
+**Now unblocked (2026-09-21):** production serves `2026-07` (Landmine 3
+resolved). The smoke run showed this deprecation header at `2026-07` only, as
+predicted.
+
+**Needs:** the migration PR. Rerun the smoke script before merge; the header
+should disappear.
+
+#### Landmine 5: stub classifier in `classification/types.py` — RESOLVED 2026-09-22 (PR #30, rev2 Move 0.3)
+
+The pasted "contract-only skeleton" of `classify_preorder_product` (17 lines,
+returning `anomaly_missing_tag` for every product) is deleted. `types.py` now
+holds only `ClassificationInput` and `ClassificationResult`.
+
+Verified before removal: all 13 importers of `classify_preorder_product` take
+it from `classification.engine`; both dataclasses are defined once, in
+`types.py`, and `engine.py` imports them from there; there are no wildcard
+imports.
+
+`tests/test_classification_types.py` guards it: the types module defines no
+functions, exposes no classifier, and `engine` re-exports the same class
+objects rather than copies. Restoring the stub fails the guard.
+
+The original entry is preserved below.
+
+##### (original) Landmine 5: stub classifier in `classification/types.py`
+
+The file defines a second `classify_preorder_product` that returns a placeholder
+`anomaly_missing_tag`. Nothing imports it today. Importing the wrong one would
+silently misclassify everything. **Needs:** deletion, scheduled as rev2 Move 0.3.
 
 #### Landmine 3: pinned Shopify API version — RESOLVED 2026-09-21 (PR #27 + Railway change)
 
