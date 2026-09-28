@@ -13,12 +13,13 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-09-22
+Last updated: 2026-09-28
 
 | Document | Status |
 |---|---|
 | `docs/DOCS_STATUS.md` (this file) | **Authoritative** for document status only. |
 | `docs/shipping_profiles.md` | **Current and authoritative** for the date-based shipping-profile create/repurpose flow (zones, carrier IDs, `includeAllProvinces`). Written and verified this engagement. Its Auth section correctly states client-credentials. |
+| `docs/nyt_reporting_week_model.md` | **Current and authoritative** for the NYT reporting two-week model (cycle week vs. sales week), the preorder-inclusion-by-pub-date rule, and the operating rule that the filed `csv_content` — not `release_report_week_start` — is the authority for what was reported. Code citations verified against `main` 2026-09-28. Documents a known defect (`mark-reported` stamps `release_report_week_start` from queue-time `week_anchor`, not the sales week) with the fix for whoever next touches the reporter. Read this before touching anything NYT-reporting week-related. |
 | `docs/phase_unified_pubdate_and_tag_simplification.md` | **SUPERSEDED (2026-09-19) by `docs/phase_unified_pubdate_rev2.md`.** Kept for the trail — do NOT build from it. Its premises carry errata **E1–E7** (section below): it proposed a duplicate history table, assumed live date tags, missed the DB override source, rested on a false "override always means earlier" premise, understated the `preorder` tag's coupling, omitted several engine/wiring touch-points, and did not account for Shopify-side and storefront consumers. |
 | `docs/phase_unified_pubdate_rev2.md` | **CURRENT — authoritative plan for the unified pub-date / override-collapse / tag-simplification phase. Not yet implemented.** §2 (current state) verified 2026-09-19 against `main` `6677400`, the production `preorder` schema, `admin-dashboard` `ac7609a`, and shopify.dev; everything else describes FUTURE state. Contains the locked decisions D1–D10 and blocking gates G1–G4 (G3 enforced in code). Record gate sign-offs in its §5.1 gate log. **Amended 2026-09-21 by A1–A2** (section below): new blocking gate **G5** before any bulk product edit, and the nightly reconciliation sweep becomes required. |
 | `docs/Preorder Classification Specification.md` | **Not yet re-verified.** The engine has changed since it was written (added `anomaly_stale_collection`, delayed-import hold, `>=`/`<=` pub-date boundaries, `has_inventory_arrival` gates). Treat `classification/engine.py` as truth; audit this doc against it before relying on it. |
@@ -46,6 +47,12 @@ re-derive or duplicate them.
   `orchestrator.classify_and_persist_product` whenever the effective pub date
   changes versus `product_status`. Live since 2026-03-03. Extend it — do not
   create a parallel history table (see E1).
+- **NYT report membership is defined by the filed CSV, not a column** (see
+  `docs/nyt_reporting_week_model.md`). `nyt_report_log.csv_content` is the
+  authority for what was reported in a given sales week.
+  `release_state.release_report_week_start` can disagree with it (stamped from
+  queue-time `week_anchor`), so do not use that column to decide report
+  membership or to scope `nyt_uploaded_at` marking. Check ISBN-in-`csv_content`.
 
 ---
 
