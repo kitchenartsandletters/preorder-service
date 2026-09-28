@@ -14,6 +14,17 @@ Flow:
 
 Called by jobs/run.py --job nyt_reporter
 Idempotency: will not re-upload if nyt_report_log already has status='success' for this week.
+
+Upload-confirmation model (see _upload_via_playwright):
+  The NYT portal FILES the data on the "Upload" click. The separate
+  "Submit Spreadsheet Data" button is NOT a reliable success signal — after a
+  successful upload the iframe transitions to a confirmation state and that
+  button is gone / auto-handled, so waiting for it to detach times out even
+  though the report was filed. Two live weeks (Sep 13-19, Sep 20-26) failed this
+  way while the portal showed "You have already submitted sales for this week."
+  Success is therefore determined by READING THE PORTAL'S CONFIRMATION TEXT in
+  the iframe, not by the submit button. "Already submitted this week" is also a
+  success (the data is filed).
 """
 
 from __future__ import annotations
@@ -51,6 +62,17 @@ NYT_PORTAL_USERNAME       = os.environ["NYT_PORTAL_USERNAME"]
 NYT_PORTAL_PASSWORD       = os.environ["NYT_PORTAL_PASSWORD"]
 SHOPIFY_STORE             = os.environ["SHOP_URL"]
 SHOPIFY_API_VERSION       = get_api_version()
+
+# Confirmation phrases the portal shows inside #spreadsheet_frame after a
+# successful upload / when this week is already filed. Matched case-insensitively
+# as substrings. Both mean "the data is filed" → success.
+_ALREADY_SUBMITTED_TEXT = "already submitted sales for this week"
+_SUBMIT_CONFIRM_TEXTS = (
+    _ALREADY_SUBMITTED_TEXT,
+    "thank you",                    # fresh-submission confirmation (defensive)
+    "successfully submitted",       # defensive alternate phrasing
+    "sales have been submitted",    # defensive alternate phrasing
+)
 
 
 def _get_supabase() -> Client:
@@ -283,11 +305,36 @@ def _generate_csv(
 
 # ── Playwright upload ─────────────────────────────────────────────────────────
 
+def _frame_confirms_submission(frame) -> Optional[str]:
+    """
+    Read the iframe body text and return the matched confirmation phrase if the
+    portal is showing a submitted/already-submitted state, else None. Substring
+    match, case-insensitive. Robust to the exact wording drifting a little.
+    """
+    try:
+        body = (frame.locator("body").inner_text() or "").lower()
+    except Exception:
+        return None
+    for phrase in _SUBMIT_CONFIRM_TEXTS:
+        if phrase in body:
+            return phrase
+    return None
+
+
 def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Optional[str], Optional[str]]:
     """
     Upload CSV to bestsellers.nytimes.com.
-    Returns (success, failure_reason, screenshot_b64).
-    Credentials and portal URL read from env vars.
+
+    Returns (success, reason, screenshot_b64).
+      - success=True,  reason="submitted"          → fresh upload confirmed
+      - success=True,  reason="already_submitted"  → week already filed (still success)
+      - success=False, reason=<error string>       → genuine failure
+
+    Success is determined by reading the portal's confirmation text inside the
+    #spreadsheet_frame iframe after the Upload click — NOT by the
+    "Submit Spreadsheet Data" button, which is unreliable (the portal files data
+    on Upload and the submit button is gone/auto-handled afterward). A screenshot
+    is captured at every terminal state.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -298,6 +345,14 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
     page = None
     browser = None
 
+    def _shot():
+        nonlocal screenshot_b64
+        try:
+            if page is not None:
+                screenshot_b64 = base64.b64encode(page.screenshot(full_page=True)).decode()
+        except Exception:
+            pass
+
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
@@ -306,17 +361,31 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
 
             # ── 1. Login ──────────────────────────────────────────────────────
             log.info("Playwright: navigating to NYT portal login")
-            page.goto("https://bestsellers.nytimes.com/login", wait_until="networkidle")
+            page.goto("https://bestsellers.nytimes.com/login", wait_until="domcontentloaded")
             page.get_by_placeholder("Enter username").fill(NYT_PORTAL_USERNAME)
             page.get_by_placeholder("Password").fill(NYT_PORTAL_PASSWORD)
             page.get_by_role("button", name="Sign in").click()
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("domcontentloaded")
             log.info("Playwright: logged in")
 
             # ── 2. Navigate to upload ─────────────────────────────────────────
             page.get_by_role("link", name="Upload Spreadsheet").click()
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(2000)  # let the iframe render
             log.info("Playwright: on upload page")
+
+            frame = page.locator("#spreadsheet_frame").content_frame
+
+            # ── 2a. Already submitted this week? (before uploading) ───────────
+            # If the portal already has this week's data, the iframe shows the
+            # "already submitted" banner and there is no upload to do. This is a
+            # SUCCESS — the report is filed.
+            matched = _frame_confirms_submission(frame)
+            if matched == _ALREADY_SUBMITTED_TEXT:
+                _shot()
+                log.info("Playwright: portal already has this week's submission — treating as success")
+                context.close(); browser.close()
+                return True, "already_submitted", screenshot_b64
 
             # ── 3. Write CSV to temp file ─────────────────────────────────────
             with tempfile.NamedTemporaryFile(
@@ -328,53 +397,61 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
 
             log.info(f"Playwright: uploading {csv_filename} from {tmp_path}")
 
-            # File input and buttons are inside an iframe
-            frame = page.locator("#spreadsheet_frame").content_frame
-
             frame.locator("#filename").set_input_files(tmp_path)
             frame.get_by_role("button", name="Upload").click()
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("domcontentloaded")
 
-            # ── 4. Submit ─────────────────────────────────────────────────────
-            submit_btn = frame.get_by_role("button", name="Submit Spreadsheet Data")
-            submit_btn.click()
-            log.info("Playwright: submit clicked, waiting for confirmation")
-
-            # Success proxy: submit button detaches after successful submission
-            # Timeout after 30s — if it's still there, something went wrong
+            # ── 4. Confirm via portal text, not the submit button ─────────────
+            # The Upload click files the data. Poll the iframe for a confirmation
+            # phrase. If a "Submit Spreadsheet Data" button is present and still
+            # required, click it opportunistically — but do NOT depend on it.
             try:
-                submit_btn.wait_for(state="detached", timeout=30_000)
-                log.info("Playwright: submit button detached — upload confirmed")
-                # Capture success screenshot
-                screenshot_b64 = base64.b64encode(page.screenshot()).decode()
-                log.info("Playwright: success screenshot captured")
-            except Exception:
-                # Button didn't detach — take screenshot and check for error text
-                screenshot_b64 = base64.b64encode(page.screenshot()).decode()
-                page_text = page.inner_text("body")
-                error_hint = "unknown"
-                for line in page_text.splitlines():
-                    line = line.strip()
-                    if line and any(w in line.lower() for w in ("error", "invalid", "failed", "rejected")):
-                        error_hint = line[:200]
-                        break
-                raise RuntimeError(
-                    f"Submit button did not detach after 30s. "
-                    f"Possible portal error: {error_hint}"
-                )
+                submit_btn = frame.get_by_role("button", name="Submit Spreadsheet Data")
+                if submit_btn.count() > 0 and submit_btn.first.is_visible():
+                    submit_btn.first.click()
+                    log.info("Playwright: clicked Submit Spreadsheet Data (opportunistic)")
+                    page.wait_for_load_state("domcontentloaded")
+            except Exception as exc:
+                # Non-fatal — the button being absent/unclickable is expected when
+                # the upload already filed the data.
+                log.info(f"Playwright: submit button not actionable ({exc}); relying on confirmation text")
 
-            context.close()
-            browser.close()
-            return True, None, screenshot_b64
+            # Poll up to ~15s for the confirmation text to appear.
+            matched = None
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                matched = _frame_confirms_submission(frame)
+                if matched:
+                    break
+                page.wait_for_timeout(1000)
+
+            _shot()
+
+            if matched:
+                log.info(f"Playwright: submission confirmed by portal text: {matched!r}")
+                context.close(); browser.close()
+                reason = "already_submitted" if matched == _ALREADY_SUBMITTED_TEXT else "submitted"
+                return True, reason, screenshot_b64
+
+            # No confirmation text — treat as a genuine failure, capture any hint.
+            page_text = ""
+            try:
+                page_text = frame.locator("body").inner_text()
+            except Exception:
+                pass
+            error_hint = "no confirmation text found after upload"
+            for line in page_text.splitlines():
+                line = line.strip()
+                if line and any(w in line.lower() for w in ("error", "invalid", "failed", "rejected")):
+                    error_hint = line[:200]
+                    break
+            context.close(); browser.close()
+            return False, f"Upload not confirmed: {error_hint}", screenshot_b64
 
     except Exception as exc:
         reason = str(exc)
         log.error(f"Playwright upload failed: {reason}")
-        if page and screenshot_b64 is None:
-            try:
-                screenshot_b64 = base64.b64encode(page.screenshot()).decode()
-            except Exception:
-                pass
+        _shot()
         try:
             browser.close()
         except Exception:
@@ -477,27 +554,37 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
 
     # Playwright upload
     import asyncio
-    success, failure_reason, screenshot_b64 = await asyncio.to_thread(
+    success, reason, screenshot_b64 = await asyncio.to_thread(
         _upload_via_playwright, csv_text, csv_filename
     )
     now_iso = datetime.now(UTC).isoformat()
 
     if success:
-        log.info("Upload successful")
+        # reason is "submitted" (fresh) or "already_submitted" (week already filed).
+        # In BOTH cases the report is filed, so mark queued titles uploaded and
+        # log success. already_submitted still marks titles: this run's queued
+        # titles need nyt_uploaded_at set regardless of which run did the portal
+        # submit.
+        log.info(f"Upload successful ({reason})")
         _mark_titles_uploaded(sb, queued)
         _write_log(
             sb, sales_start, sales_end, csv_filename, csv_text,
-            titles_count=len(queued), upload_status="success", uploaded_at=now_iso,
-            screenshot_b64=screenshot_b64,
+            titles_count=len(queued), upload_status="success",
+            fallback_reason=(f"already_submitted: portal already had this week's data"
+                             if reason == "already_submitted" else None),
+            uploaded_at=now_iso, screenshot_b64=screenshot_b64,
         )
-        return {"uploaded": True, "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count}
+        return {
+            "uploaded": True, "reason": reason,
+            "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count,
+        }
 
     else:
-        log.error(f"Upload failed: {failure_reason}")
+        log.error(f"Upload failed: {reason}")
         _write_log(
             sb, sales_start, sales_end, csv_filename, csv_text,
             titles_count=len(queued), upload_status="fallback",
-            fallback_reason=failure_reason, screenshot_b64=screenshot_b64,
+            fallback_reason=reason, screenshot_b64=screenshot_b64,
         )
         nyt_url = f"{ADMIN_DASHBOARD_URL}/reports/nyt"
         send_email(
@@ -506,14 +593,14 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
                 f"<html><body style='font-family:sans-serif'>"
                 f"<h2 style='color:#b91c1c'>⚠️ NYT Report — Manual Upload Required</h2>"
                 f"<p>Automated upload failed for <strong>{week_str}</strong>.</p>"
-                f"<p><strong>Reason:</strong> {failure_reason}</p>"
+                f"<p><strong>Reason:</strong> {reason}</p>"
                 f"<p>Upload the attached CSV at <a href='{NYT_PORTAL_URL}'>{NYT_PORTAL_URL}</a>, "
                 f"then confirm in the <a href='{nyt_url}'>Admin Dashboard</a>.</p>"
                 f"</body></html>"
             ),
             text_body=(
                 f"NYT Report upload FAILED for {week_str}.\n"
-                f"Reason: {failure_reason}\n\n"
+                f"Reason: {reason}\n\n"
                 f"Upload CSV manually: {NYT_PORTAL_URL}\n"
                 f"Mark as reported: {nyt_url}\n"
             ),
@@ -523,6 +610,6 @@ async def run(limit: int = 2000, dry_run: bool = False) -> Dict[str, Any]:
         )
         return {
             "uploaded": False, "fallback": True,
-            "failure_reason": failure_reason,
+            "failure_reason": reason,
             "week_start": str(queue_start), "titles_count": len(queued), "row_count": row_count,
         }
