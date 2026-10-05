@@ -15,16 +15,52 @@ Flow:
 Called by jobs/run.py --job nyt_reporter
 Idempotency: will not re-upload if nyt_report_log already has status='success' for this week.
 
+────────────────────────────────────────────────────────────────────────────
+CONFIRMED PORTAL FLOW (observed live via scripts/nyt_recon_sunday.py, 2026-10-04)
+────────────────────────────────────────────────────────────────────────────
+The bestsellers.nytimes.com upload flow, confirmed by driving it manually and
+capturing each step:
+
+  1. Login page → fill username/password → "Sign in".
+  2. Click the "Upload Spreadsheet" nav link. The upload form renders inside an
+     iframe with id="spreadsheet_frame".
+  3. The iframe's upload form has EXACTLY ONE button: value="Upload".
+     **There is NO "Submit Spreadsheet Data" button.** The original code waited
+     up to 30s for that button to detach as its success signal; the button does
+     not exist in this flow and never did (it was from an older portal version
+     or a misremembering). Waiting for it always timed out even though the
+     report was filed — the two live failures Sep 13-19 and Sep 20-26.
+  4. Set the file on input#filename, then click the single "Upload" button.
+     **The Upload click IS the submission** — the portal files the data on that
+     click. There is no second confirm step.
+  5. On success the iframe shows a confirmation page. The CURRENT wording is:
+         "Thank you for submitting your sales."
+     followed by "worksheet name: Sheet1" and the parsed ISBN/QTY table echoed
+     back. (The OLDER portal, seen Sep 13, instead showed
+         "The spreadsheet is being processed." … "The spreadsheet has been
+         processed."
+     with a row-by-row import log. The portal reskinned the confirmation page
+     between Sep 13 and Oct 4; that wording change is what broke the original
+     detection. Both phrasings are matched defensively — see
+     _SUBMIT_CONFIRM_TEXTS.)
+  6. For the REST of that calendar week, revisiting the upload page shows the
+     LOCKED state — the iframe inserts
+         "You have already submitted sales for this week."
+     right after the greeting, and the submission flow is unavailable. This is
+     also a SUCCESS condition (the data is filed); detected before uploading.
+
 Upload-confirmation model (see _upload_via_playwright):
-  The NYT portal FILES the data on the "Upload" click. The separate
-  "Submit Spreadsheet Data" button is NOT a reliable success signal — after a
-  successful upload the iframe transitions to a confirmation state and that
-  button is gone / auto-handled, so waiting for it to detach times out even
-  though the report was filed. Two live weeks (Sep 13-19, Sep 20-26) failed this
-  way while the portal showed "You have already submitted sales for this week."
-  Success is therefore determined by READING THE PORTAL'S CONFIRMATION TEXT in
-  the iframe, not by the submit button. "Already submitted this week" is also a
-  success (the data is filed).
+  Success is determined by READING THE PORTAL'S CONFIRMATION TEXT inside the
+  #spreadsheet_frame iframe — NOT by any button. Success phrases (substring,
+  case-insensitive) live in _SUBMIT_CONFIRM_TEXTS and cover the current wording,
+  the already-submitted lock, and the older "processed" wording. A screenshot is
+  captured at every terminal state so any future portal reskin leaves a picture
+  to diagnose from instead of a bare timeout.
+
+  If the portal changes its confirmation wording again, the symptom is: upload
+  succeeds (the "Thank you" page is visible in the stored screenshot) but the
+  run logs `fallback` because no phrase matched. Fix = add the new phrase to
+  _SUBMIT_CONFIRM_TEXTS. Do NOT reintroduce a button-based success test.
 """
 
 from __future__ import annotations
@@ -63,13 +99,23 @@ NYT_PORTAL_PASSWORD       = os.environ["NYT_PORTAL_PASSWORD"]
 SHOPIFY_STORE             = os.environ["SHOP_URL"]
 SHOPIFY_API_VERSION       = get_api_version()
 
-# Confirmation phrases the portal shows inside #spreadsheet_frame after a
-# successful upload / when this week is already filed. Matched case-insensitively
-# as substrings. Both mean "the data is filed" → success.
+# Confirmation phrases the portal shows inside #spreadsheet_frame. Matched
+# case-insensitively as substrings. Each means "the data is filed" → success.
+# See the module docstring (CONFIRMED PORTAL FLOW) for where each comes from.
+#   - _ALREADY_SUBMITTED_TEXT: the locked state seen for the rest of the week.
+#   - "thank you for submitting": CURRENT fresh-submission confirmation (Oct 2026).
+#   - "has been processed" / "is being processed": OLDER portal wording (Sep 2026),
+#     kept so a reskin back to it does not break detection.
+#   - the remaining entries are defensive alternates.
+# If the portal changes wording again, ADD the new phrase here — do not switch
+# back to a button-based success test.
 _ALREADY_SUBMITTED_TEXT = "already submitted sales for this week"
 _SUBMIT_CONFIRM_TEXTS = (
     _ALREADY_SUBMITTED_TEXT,
-    "thank you",                    # fresh-submission confirmation (defensive)
+    "thank you for submitting",     # current confirmation (observed 2026-10-04)
+    "thank you",                    # looser catch for the above
+    "has been processed",           # older portal confirmation (observed 2026-09-13)
+    "is being processed",           # older portal in-progress state
     "successfully submitted",       # defensive alternate phrasing
     "sales have been submitted",    # defensive alternate phrasing
 )
@@ -331,10 +377,10 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
       - success=False, reason=<error string>       → genuine failure
 
     Success is determined by reading the portal's confirmation text inside the
-    #spreadsheet_frame iframe after the Upload click — NOT by the
-    "Submit Spreadsheet Data" button, which is unreliable (the portal files data
-    on Upload and the submit button is gone/auto-handled afterward). A screenshot
-    is captured at every terminal state.
+    #spreadsheet_frame iframe after the Upload click — NOT by any submit button.
+    The upload form has only one button ("Upload") and the Upload click is the
+    submission; see the module docstring (CONFIRMED PORTAL FLOW). A screenshot is
+    captured at every terminal state.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -397,26 +443,14 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
 
             log.info(f"Playwright: uploading {csv_filename} from {tmp_path}")
 
+            # The upload form has one button ("Upload"); the Upload click IS the
+            # submission (confirmed 2026-10-04). There is no second submit step.
             frame.locator("#filename").set_input_files(tmp_path)
             frame.get_by_role("button", name="Upload").click()
             page.wait_for_load_state("domcontentloaded")
 
-            # ── 4. Confirm via portal text, not the submit button ─────────────
-            # The Upload click files the data. Poll the iframe for a confirmation
-            # phrase. If a "Submit Spreadsheet Data" button is present and still
-            # required, click it opportunistically — but do NOT depend on it.
-            try:
-                submit_btn = frame.get_by_role("button", name="Submit Spreadsheet Data")
-                if submit_btn.count() > 0 and submit_btn.first.is_visible():
-                    submit_btn.first.click()
-                    log.info("Playwright: clicked Submit Spreadsheet Data (opportunistic)")
-                    page.wait_for_load_state("domcontentloaded")
-            except Exception as exc:
-                # Non-fatal — the button being absent/unclickable is expected when
-                # the upload already filed the data.
-                log.info(f"Playwright: submit button not actionable ({exc}); relying on confirmation text")
-
-            # Poll up to ~15s for the confirmation text to appear.
+            # ── 4. Confirm via portal text ────────────────────────────────────
+            # Poll the iframe for a confirmation phrase (see _SUBMIT_CONFIRM_TEXTS).
             matched = None
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
@@ -434,6 +468,9 @@ def _upload_via_playwright(csv_text: str, csv_filename: str) -> tuple[bool, Opti
                 return True, reason, screenshot_b64
 
             # No confirmation text — treat as a genuine failure, capture any hint.
+            # The screenshot (_shot above) shows the actual portal state; if it
+            # shows a success page, the portal changed its wording → add the new
+            # phrase to _SUBMIT_CONFIRM_TEXTS.
             page_text = ""
             try:
                 page_text = frame.locator("body").inner_text()
