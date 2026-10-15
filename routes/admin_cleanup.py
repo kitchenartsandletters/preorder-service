@@ -17,6 +17,13 @@ Endpoints:
   POST /cleanup/collection/{product_id}  — Remove from Preorder collection
   POST /cleanup/unpublish/{product_id}   — Unpublish from Catch All channel
   POST /cleanup/full/{product_id}        — Run all three cleanup steps
+
+Delayed-import hold: /cleanup/collection, /cleanup/unpublish and /cleanup/full
+refuse with 409 when the title is a delayed import (pub date passed, stock never
+arrived, still deliberately an active preorder). Pass ?force=true to override;
+forced runs are logged with forced=True. /cleanup/description is not guarded —
+it only rewrites marketing copy and changes no status. See
+services/cleanup_guard.py.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from shopify_client import ShopifyClient
+from services.cleanup_guard import check_delayed_import_hold
 from services.shopify_cleanup import (
     fetch_cleanup_state,
     analyze_description,
@@ -98,6 +106,17 @@ def log_cleanup_action(
 # ──────────────────────────────────────────────
 # Endpoints
 # ──────────────────────────────────────────────
+
+def _refuse_if_held(product_id: int, force: bool) -> Optional[Dict[str, Any]]:
+    """
+    Raise 409 when the product is a delayed-import hold and force is not set.
+    Returns the hold (or None) so callers can mark a forced run in the log.
+    """
+    hold = check_delayed_import_hold(supabase, product_id)
+    if hold and not force:
+        raise HTTPException(status_code=409, detail=hold)
+    return hold
+
 
 @router.get("/cleanup/state/{product_id}")
 async def get_cleanup_state(product_id: int, ok: bool = Depends(require_admin_token)):
@@ -180,11 +199,16 @@ async def cleanup_description(product_id: int, ok: bool = Depends(require_admin_
 
 
 @router.post("/cleanup/collection/{product_id}")
-async def cleanup_collection(product_id: int, ok: bool = Depends(require_admin_token)):
+async def cleanup_collection(
+    product_id: int, force: bool = False, ok: bool = Depends(require_admin_token)
+):
     """
     Remove a product from the Preorder collection.
     No-ops if already removed.
+
+    Refuses with 409 for a delayed-import hold unless force=true.
     """
+    hold = _refuse_if_held(product_id, force)
     client = ShopifyClient()
     try:
         state = await fetch_cleanup_state(client, product_id)
@@ -207,6 +231,7 @@ async def cleanup_collection(product_id: int, ok: bool = Depends(require_admin_t
             details={
                 "title": state.title,
                 "collection_gid": state.preorder_collection_gid,
+                "forced": bool(hold),
             },
             errors=errors if errors else None,
         )
@@ -234,11 +259,17 @@ async def cleanup_collection(product_id: int, ok: bool = Depends(require_admin_t
 
 
 @router.post("/cleanup/unpublish/{product_id}")
-async def cleanup_unpublish(product_id: int, ok: bool = Depends(require_admin_token)):
+async def cleanup_unpublish(
+    product_id: int, force: bool = False, ok: bool = Depends(require_admin_token)
+):
     """
     Unpublish a product from the Catch All publication channel.
     No-ops if already unpublished.
+
+    Refuses with 409 for a delayed-import hold unless force=true: the title is
+    still selling as a preorder to customers awaiting stock.
     """
+    hold = _refuse_if_held(product_id, force)
     client = ShopifyClient()
     try:
         state = await fetch_cleanup_state(client, product_id)
@@ -260,6 +291,7 @@ async def cleanup_unpublish(product_id: int, ok: bool = Depends(require_admin_to
             success=success,
             details={
                 "title": state.title,
+                "forced": bool(hold),
             },
             errors=errors if errors else None,
         )
@@ -287,7 +319,9 @@ async def cleanup_unpublish(product_id: int, ok: bool = Depends(require_admin_to
 
 
 @router.post("/cleanup/full/{product_id}")
-async def cleanup_full(product_id: int, ok: bool = Depends(require_admin_token)):
+async def cleanup_full(
+    product_id: int, force: bool = False, ok: bool = Depends(require_admin_token)
+):
     """
     Run the full cleanup sequence for a product:
     1. Clean Body HTML (remove preamble/footer)
@@ -296,7 +330,12 @@ async def cleanup_full(product_id: int, ok: bool = Depends(require_admin_token))
 
     Each step is independent — if one fails, the others still execute.
     Returns per-step results.
+
+    Refuses with 409 for a delayed-import hold unless force=true. The refusal
+    covers the whole sequence: full cleanup means "retire this title", which is
+    exactly what must not happen while the hold stands.
     """
+    hold = _refuse_if_held(product_id, force)
     client = ShopifyClient()
     try:
         state = await fetch_cleanup_state(client, product_id)
@@ -323,7 +362,7 @@ async def cleanup_full(product_id: int, ok: bool = Depends(require_admin_token))
                     product_id=product_id,
                     action="clean_description",
                     success=success,
-                    details={"title": state.title, "source": "full_cleanup"},
+                    details={"title": state.title, "source": "full_cleanup", "forced": bool(hold)},
                     errors=errors if errors else None,
                 )
             except Exception as e:
@@ -347,7 +386,7 @@ async def cleanup_full(product_id: int, ok: bool = Depends(require_admin_token))
                     product_id=product_id,
                     action="remove_from_collection",
                     success=success,
-                    details={"title": state.title, "source": "full_cleanup"},
+                    details={"title": state.title, "source": "full_cleanup", "forced": bool(hold)},
                     errors=errors if errors else None,
                 )
             except Exception as e:
@@ -371,7 +410,7 @@ async def cleanup_full(product_id: int, ok: bool = Depends(require_admin_token))
                     product_id=product_id,
                     action="unpublish_catch_all",
                     success=success,
-                    details={"title": state.title, "source": "full_cleanup"},
+                    details={"title": state.title, "source": "full_cleanup", "forced": bool(hold)},
                     errors=errors if errors else None,
                 )
             except Exception as e:
