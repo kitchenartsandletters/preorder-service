@@ -13,9 +13,10 @@ MagicMock accepted the new chain, recorded it somewhere nobody asserted on, and
 the tests failed (or, worse, passed while asserting nothing). This fake:
 
 - Mirrors the call chains production actually uses:
-  `.schema(name).table(name)`, `.select()`, `.eq()`, `.neq()`, `.limit()`,
-  `.order()`, `.single()`, `.maybe_single()`, `.insert()`, `.upsert(on_conflict=)`,
-  `.update()`, `.delete()`, `.execute()`.
+  `.schema(name).table(name)`, `.select()`, `.eq()`, `.neq()`, `.in_()`,
+  `.lte()`, `.gte()`, `.not_.in_()`, `.limit()`, `.order()`, `.single()`,
+  `.maybe_single()`, `.insert()`, `.upsert(on_conflict=)`, `.update()`,
+  `.delete()`, `.execute()`.
 - Stores rows per (schema, table), so tests assert on resulting STATE
   (what is in `preorder.pubdate_history`) instead of mock-call trivia.
 - Raises on an unmodelled method (plain attribute access), so a production
@@ -81,6 +82,23 @@ class _Query:
         self.filters.append(("neq", col, val))
         return self
 
+    def in_(self, col, values):
+        self.filters.append(("in", col, list(values)))
+        return self
+
+    def lte(self, col, val):
+        self.filters.append(("lte", col, val))
+        return self
+
+    def gte(self, col, val):
+        self.filters.append(("gte", col, val))
+        return self
+
+    @property
+    def not_(self):
+        """Mirror postgrest-py's `.not_.in_(...)` / `.not_.eq(...)` chaining."""
+        return _NegatedQuery(self)
+
     def limit(self, n):
         self.limit_n = n
         return self
@@ -104,6 +122,15 @@ class _Query:
             if kind == "eq" and have != val:
                 return False
             if kind == "neq" and have == val:
+                return False
+            if kind == "in" and have not in val:
+                return False
+            if kind == "not_in" and have in val:
+                return False
+            # Range filters follow PostgREST: NULL never matches.
+            if kind == "lte" and (have is None or have > val):
+                return False
+            if kind == "gte" and (have is None or have < val):
                 return False
         return True
 
@@ -175,6 +202,21 @@ class _Query:
             return FakeResponse(data=removed)
 
         raise NotImplementedError(f"FakeSupabase: unsupported op {self.op!r}")
+
+
+class _NegatedQuery:
+    """`query.not_` — negates the next filter, as postgrest-py does."""
+
+    def __init__(self, query: "_Query"):
+        self._query = query
+
+    def in_(self, col, values):
+        self._query.filters.append(("not_in", col, list(values)))
+        return self._query
+
+    def eq(self, col, val):
+        self._query.filters.append(("neq", col, val))
+        return self._query
 
 
 class _SchemaScope:
