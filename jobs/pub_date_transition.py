@@ -2,17 +2,29 @@
 """
 pub_date_transition.py
 
-Identifies active_preorder and early_stock_arrival products whose
-effective_pub_date has passed and forces reclassification against
-current Shopify state.
+Identifies every product whose effective_pub_date has passed but whose stored
+status is not yet settled, and forces reclassification against current Shopify
+state.
 
-Ensures products transition to historical_preorder on pub date
-without waiting for a natural Shopify webhook event.
+Why it is needed: classification depends on date.today() at the moment it runs,
+and nothing re-evaluates a product just because the calendar moved. A product
+is only reclassified by a Shopify webhook, a manual /reclassify call, or this
+sweep.
+
+Scope: every status EXCEPT the two settled ones (historical_preorder,
+not_a_preorder_product). Anomaly statuses are included deliberately — an
+anomaly row whose pub date later passes is never revisited otherwise, and some
+anomalies can only hold while the date is in the future
+(anomaly_missing_collection requires effective_pub_date >= today;
+anomaly_override_conflict Case 3 requires pub_date > today). Those rows are
+leftovers that a fresh classification clears. Before this change the sweep
+selected only active_preorder and early_stock_arrival, so they were stranded.
 
 Safe to run multiple times — reclassification is idempotent.
 Products already transitioned are no-ops.
 
-Intended schedule: Tuesdays 11:00 UTC (07:00 ET) via Railway cron.
+Intended schedule: daily via Railway cron. (A weekly run left a title stuck for
+up to six days; the schedule itself lives in Railway, not in this repo.)
 """
 
 from __future__ import annotations
@@ -28,11 +40,15 @@ UTC = timezone.utc
 logger = logging.getLogger(__name__)
 
 
+#: Statuses that need no date-driven re-evaluation. Everything else is swept.
+SETTLED_STATUSES = ["historical_preorder", "not_a_preorder_product"]
+
+
 async def fetch_stale_preorders(supabase, limit: int) -> List[int]:
     """
-    Fetch active_preorder and early_stock_arrival products whose
-    effective_pub_date has passed but have not yet transitioned
-    to historical_preorder.
+    Fetch products whose effective_pub_date has passed (or is today) and whose
+    stored status is not settled — including anomaly statuses, which nothing
+    else re-evaluates once the date moves.
     """
     today = date.today().isoformat()
 
@@ -41,7 +57,7 @@ async def fetch_stale_preorders(supabase, limit: int) -> List[int]:
         .schema("preorder")
         .table("product_status")
         .select("product_id")
-        .in_("status", ["active_preorder", "early_stock_arrival"])
+        .not_.in_("status", SETTLED_STATUSES)
         .lte("effective_pub_date", today)
         .limit(limit)
         .execute()
