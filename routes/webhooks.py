@@ -191,11 +191,37 @@ async def _process_inventory_update(payload: dict, shop_domain: str):
         )
 
 
+#: Order topics whose payload carries `line_items`.
+LINE_ITEM_TOPICS = ("orders/create", "orders/updated", "orders/cancelled", "orders/paid", "orders/fulfilled")
+
+
 def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
-    # produce rows (one per line item) with minimal extracted facts
+    """
+    Produce one tracking row per line item.
+
+    WHY ONE ROW PER LINE MATTERS (docs/DOCS_STATUS.md Landmine 14): the ledger
+    builder derives a row per line item from the payload, but
+    `ledger_tracking_unique (tracking_id)` admits only ONE ledger row per
+    tracking row, and the insert is ON CONFLICT DO NOTHING. So the number of
+    tracking rows caps the number of ledger rows for that event.
+
+    Until 2026-10-16 only orders/create, orders/updated and orders/cancelled
+    produced per-line rows. orders/fulfilled and refunds/create produced a
+    single row for the whole order, so on a multi-line order only the first
+    line's fulfillment or refund was recorded and the rest were dropped. Over
+    the 12 months to 2026-10-16 that lost 1,433 of 4,822 fulfilled preorder
+    lines (~1,555 units), leaving 68 of 72 open lifecycle snapshots unable to
+    close.
+
+    Each row gets its own random event_id downstream (the gateway sends an
+    empty X-Gateway-Event-ID), so rows do not collide on tracking.event_id.
+    Duplicate ledger rows remain impossible: the per-topic unique indexes
+    (commitment_positive_once, and the fulfillment/refund keys) still apply.
+    """
     rows = []
-    if topic in ("orders/create", "orders/updated", "orders/cancelled"):
-        for li in payload.get("line_items", []):
+
+    if topic in LINE_ITEM_TOPICS:
+        for li in payload.get("line_items", []) or []:
             rows.append({
                 "order_id": payload.get("id"),
                 "order_name": payload.get("name"),
@@ -208,10 +234,33 @@ def _extract_order_facts(topic: str, payload: dict) -> list[dict]:
                 "pub_date": None,     # fill later if you parse/store pub date elsewhere
                 "status": "pending"
             })
+
+    elif topic == "refunds/create":
+        # Refund payloads nest the original line under refund_line_items[].line_item,
+        # and payload.id is the REFUND id, so the order id comes from order_id.
+        order_id = payload.get("order_id") or (payload.get("order") or {}).get("id")
+        for rli in payload.get("refund_line_items", []) or []:
+            li = rli.get("line_item") or {}
+            rows.append({
+                "order_id": order_id,
+                "order_name": (payload.get("order") or {}).get("name"),
+                "customer_id": ((payload.get("order") or {}).get("customer") or {}).get("id"),
+                "line_item_id": rli.get("line_item_id") or li.get("id"),
+                "product_id": li.get("product_id"),
+                "variant_id": li.get("variant_id"),
+                "sku": li.get("sku"),
+                "quantity": rli.get("quantity"),
+                "pub_date": None,
+                "status": "pending"
+            })
+
     elif topic == "products/update":
         rows.append({"status": "pending"})
     elif topic == "inventory_levels/update":
         rows.append({"status": "pending"})
+
+    # Fallback keeps a single tracking row for an unknown or empty payload, so
+    # the event is still recorded rather than silently dropped.
     return rows or [{"status": "pending"}]
 
 async def _handle(topic: str, request: Request):
