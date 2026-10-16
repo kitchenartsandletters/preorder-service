@@ -28,7 +28,7 @@ app.add_middleware(
 )
 
 logger = logging.getLogger("uvicorn.error")
-logger.info("\ud83d\ude80 Preorder service fully started and accepting requests")
+logger.info("🚀 Preorder service fully started and accepting requests")
 
 app.include_router(webhooks_router)
 app.include_router(approvals_router)
