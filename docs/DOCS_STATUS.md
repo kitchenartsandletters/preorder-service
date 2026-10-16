@@ -468,27 +468,6 @@ is proposed for approval first, as the R1 repair was.
 4. A decision on recomputing affected lifecycle snapshots.
 5. Then complete R1's outstanding order, #80284.
 
-### Landmine 9: `/approvals` router is mounted with NO authentication
-
-`routes/approvals.py` is included in `main.py` with no auth dependency. The only
-app-wide middleware is CORS, which restricts browsers, not scripts or `curl`.
-
-Its endpoints:
-- `GET /approvals/list` reads `preorder.vw_pending_approvals`.
-- `POST /approvals/approve` **writes** `preorder.approvals`, including an
-  `override_pub_date` column.
-- `POST /approvals/revoke` **writes** `preorder.approvals`.
-
-Found from code on 2026-09-19. It was deliberately not probed against
-production. No callers exist in this repo or in `admin-dashboard`, and the table
-is dormant (1 row, last updated 2025-11-10).
-
-**Owner decision, 2026-09-22: unmount the router.** A dedicated PR removes the
-`include_router` line from `main.py`. Re-confirm there are still no callers
-first, and after deploy check that the routes return 404. It is not part of the
-pub-date phase. Its `override_pub_date` column feeds only
-`vw_pending_approvals`, not the classifier.
-
 ### Landmine 10: import-time env reads, and admin-auth outliers
 
 **Import-time env reads.** Five routers call `create_client(...)` at import
@@ -669,6 +648,58 @@ Do not fix it piecemeal, which would create exactly the half-ET state this
 entry describes.
 
 ### Resolved
+
+#### Landmine 9: unauthenticated `/approvals` router — RESOLVED 2026-10-16 (unmounted)
+
+`routes/approvals.py` was mounted in `main.py` with no auth dependency. The
+only app-wide middleware is CORS, which restricts browsers but not scripts, so
+`GET /approvals/list` was world-readable and `POST /approvals/approve` and
+`/approvals/revoke` were world-writable — both writing to
+`preorder.approvals`, including its `override_pub_date` column.
+
+**Fix: unmounted**, per the owner decision of 2026-09-22, rather than adding
+auth to a router nothing calls.
+- The `include_router` line and its import are removed from `main.py`, with a
+  comment at the call site explaining why.
+- `routes/approvals.py` is **kept**, unmounted. The table is untouched and
+  `scripts/verify_preorder_schema.py` still expects it.
+- Re-confirmed before unmounting: no caller in this repo, none in
+  `admin-dashboard`, table dormant (1 row, last touched 2025-11-10).
+
+**Verification:** the OpenAPI schema lists 52 paths and none contains
+"approval"; the three endpoints return 404; `/healthz`, webhooks, reclassify
+and all `/admin/preorders` routes including `/holds` are still mounted.
+`tests/test_approvals_unmounted.py` fails if the router is mounted again, so
+whoever does it has to add authentication first. Mutation-checked: remounting
+fails 4 of its 5 checks.
+
+Note for anyone introspecting routes: this FastAPI version keeps included
+routers as `_IncludedRouter` objects rather than flattening them into
+`app.routes`, so `app.routes` carries no usable paths. Use
+`app.openapi()["paths"]`.
+
+The original entry is preserved below.
+
+##### (original) Landmine 9: `/approvals` router is mounted with NO authentication
+
+`routes/approvals.py` is included in `main.py` with no auth dependency. The only
+app-wide middleware is CORS, which restricts browsers, not scripts or `curl`.
+
+Its endpoints:
+- `GET /approvals/list` reads `preorder.vw_pending_approvals`.
+- `POST /approvals/approve` **writes** `preorder.approvals`, including an
+  `override_pub_date` column.
+- `POST /approvals/revoke` **writes** `preorder.approvals`.
+
+Found from code on 2026-09-19. It was deliberately not probed against
+production. No callers exist in this repo or in `admin-dashboard`, and the table
+is dormant (1 row, last updated 2025-11-10).
+
+**Owner decision, 2026-09-22: unmount the router.** A dedicated PR removes the
+`include_router` line from `main.py`. Re-confirm there are still no callers
+first, and after deploy check that the routes return 404. It is not part of the
+pub-date phase. Its `override_pub_date` column feeds only
+`vw_pending_approvals`, not the classifier.
 
 #### The inferred delayed-import hold — REPLACED 2026-10-16 (PRs #37, #38, and the release-queue migration)
 
