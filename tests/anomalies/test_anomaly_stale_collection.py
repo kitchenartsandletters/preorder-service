@@ -63,11 +63,13 @@ def test_stale_collection_does_not_fire_for_future_pub():
 # Delayed import — held as active_preorder, not an anomaly
 # ──────────────────────────────────────────────
 
-def test_delayed_import_holds_as_active_preorder():
+def test_past_dated_in_collection_without_a_hold_is_stale_even_with_no_arrival():
     """
-    Past pub date, still in collection, preorder tag, NO inventory arrival,
-    negative inventory (open commitments). This is a delayed import in transit —
-    it must stay active_preorder, not become an anomaly or historical.
+    Past pub date, still in collection, no arrival record, open commitments.
+
+    This used to be the inferred "delayed import" and stayed active_preorder
+    indefinitely. Owner decision 2026-10-15 retired that: with no explicit hold
+    the title needs removing from the collection, so it is stale.
     """
     product = make_input(
         tags=["preorder"],
@@ -76,17 +78,13 @@ def test_delayed_import_holds_as_active_preorder():
         date_tags=[PAST_DATE],
         inventory=-53,
         has_inventory_arrival=False,
+        has_active_hold=False,
     )
     result = classify_preorder_product(product)
-    assert result.status == "active_preorder"
-    assert result.anomaly_type is None
+    assert result.status == "anomaly_stale_collection"
 
 
-def test_delayed_import_zero_inventory_still_active():
-    """
-    Past pub date, in collection, no arrival, inventory exactly 0.
-    Still a delayed import (no stock ever recorded) → active_preorder.
-    """
+def test_zero_inventory_past_dated_in_collection_is_also_stale():
     product = make_input(
         tags=["preorder"],
         in_preorder_collection=True,
@@ -94,10 +92,60 @@ def test_delayed_import_zero_inventory_still_active():
         date_tags=[PAST_DATE],
         inventory=0,
         has_inventory_arrival=False,
+        has_active_hold=False,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "anomaly_stale_collection"
+
+
+def test_an_active_hold_exempts_a_title_from_stale_collection():
+    """A held title is in the collection on purpose — that is what is held."""
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=PAST_DATE,
+        date_tags=[PAST_DATE],
+        inventory=-53,
+        has_inventory_arrival=False,
+        has_active_hold=True,
     )
     result = classify_preorder_product(product)
     assert result.status == "active_preorder"
     assert result.anomaly_type is None
+
+
+def test_event_hold_keeps_a_title_active_even_with_stock_on_hand():
+    """
+    An `event` hold (signing) usually HAS stock: the book released and the
+    signing is still to come. The incentive should keep running, so the held
+    path is deliberately not conditioned on inventory.
+    """
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=PAST_DATE,
+        date_tags=[PAST_DATE],
+        inventory=12,
+        has_inventory_arrival=True,
+        has_active_hold=True,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "active_preorder"
+
+
+def test_a_hold_does_not_apply_once_the_title_leaves_the_collection():
+    """Collection membership is what a hold holds; without it there is nothing to hold."""
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=False,
+        pub_date=PAST_DATE,
+        date_tags=[PAST_DATE],
+        inventory=-5,
+        has_inventory_arrival=False,
+        has_active_hold=True,
+    )
+    result = classify_preorder_product(product)
+    assert result.status == "historical_preorder"
 
 
 def test_delayed_import_transitions_once_stock_arrives():

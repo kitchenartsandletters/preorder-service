@@ -1,11 +1,14 @@
 """
 Tests for services/cleanup_guard.py and its wiring into the cleanup routes.
 
-A delayed-import hold is a past-dated title the engine deliberately keeps
-`active_preorder` because stock never arrived and commitments are open. Cleaning
-it up removes it from the Preorder collection, which flips it to
-`historical_preorder` and ends the hold early. The cleanup routes read Shopify
-state only, so nothing stopped that before this guard.
+A hold (preorder.preorder_hold) is a deliberate decision to keep a past-dated
+title an active preorder. What is held is Preorder collection membership, which
+drives the rewards system and the preorder copy — so cleaning the title up ends
+the hold early. The cleanup routes read Shopify state only, so nothing stopped
+that before this guard.
+
+The guard used to INFER a hold from (active_preorder AND past pub date AND no
+arrival). That inference was retired; it now reads the hold record.
 """
 
 from datetime import date, timedelta
@@ -15,74 +18,67 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock
 
-from services.cleanup_guard import check_delayed_import_hold
+from services.cleanup_guard import check_active_hold
 
-YESTERDAY = (date.today() - timedelta(days=1)).isoformat()
-TODAY = date.today().isoformat()
-NEXT_MONTH = (date.today() + timedelta(days=30)).isoformat()
+from services.hold_service import today_et
+
+YESTERDAY = (today_et() - timedelta(days=1)).isoformat()
+TODAY = today_et().isoformat()
+TOMORROW = (today_et() + timedelta(days=1)).isoformat()
 
 HELD_ID = 111
 PRODUCT_TITLE = "Delayed Import Title"
 
 
-def seed_status(sb, product_id, status, effective_pub_date):
-    sb.seed("preorder", "product_status", [
-        {"product_id": product_id, "status": status, "effective_pub_date": effective_pub_date}
-    ])
-
-
-def seed_arrival(sb, product_id):
-    sb.seed("preorder", "inventory_arrival", [{"product_id": product_id}])
+def seed_hold(sb, product_id=HELD_ID, hold_until=None, reason="event", note=None):
+    sb.seed("preorder", "preorder_hold", [{
+        "product_id": product_id,
+        "hold_until": (hold_until or TOMORROW),
+        "reason": reason,
+        "note": note,
+        "created_by": "tester",
+    }])
 
 
 # ---- the rule --------------------------------------------------------------
 
-def test_past_dated_active_with_no_arrival_is_held(fake_supabase):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", YESTERDAY)
+def test_live_hold_is_detected(fake_supabase):
+    seed_hold(fake_supabase, note="signing with the author")
 
-    hold = check_delayed_import_hold(fake_supabase, HELD_ID)
+    hold = check_active_hold(fake_supabase, HELD_ID)
 
     assert hold is not None
-    assert hold["reason"] == "delayed_import_hold"
-    assert hold["effective_pub_date"] == YESTERDAY
+    assert hold["reason"] == "preorder_hold"
+    assert hold["hold_until"] == TOMORROW
+    assert hold["hold_reason"] == "event"
+    assert "signing with the author" in hold["message"]
     assert "force=true" in hold["resolution"]
 
 
-def test_pub_day_is_not_a_hold(fake_supabase):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", TODAY)
-    assert check_delayed_import_hold(fake_supabase, HELD_ID) is None
+def test_hold_ending_today_still_blocks(fake_supabase):
+    """hold_until is the last held day, inclusive, in ET."""
+    seed_hold(fake_supabase, hold_until=TODAY)
+    assert check_active_hold(fake_supabase, HELD_ID) is not None
 
 
-def test_future_dated_active_is_not_a_hold(fake_supabase):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", NEXT_MONTH)
-    assert check_delayed_import_hold(fake_supabase, HELD_ID) is None
+def test_expired_hold_does_not_block(fake_supabase):
+    seed_hold(fake_supabase, hold_until=YESTERDAY)
+    assert check_active_hold(fake_supabase, HELD_ID) is None
 
 
-def test_arrival_record_ends_the_hold(fake_supabase):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", YESTERDAY)
-    seed_arrival(fake_supabase, HELD_ID)
-    assert check_delayed_import_hold(fake_supabase, HELD_ID) is None
+def test_no_hold_does_not_block(fake_supabase):
+    assert check_active_hold(fake_supabase, HELD_ID) is None
 
 
-@pytest.mark.parametrize("status", [
-    "historical_preorder",
-    "early_stock_arrival",
-    "anomaly_stale_collection",
-    "not_a_preorder_product",
-])
-def test_other_statuses_are_never_held(fake_supabase, status):
-    """anomaly_stale_collection especially: cleanup is exactly the right action there."""
-    seed_status(fake_supabase, HELD_ID, status, YESTERDAY)
-    assert check_delayed_import_hold(fake_supabase, HELD_ID) is None
-
-
-def test_unknown_product_does_not_block_cleanup(fake_supabase):
-    assert check_delayed_import_hold(fake_supabase, 999) is None
-
-
-def test_missing_effective_pub_date_does_not_block_cleanup(fake_supabase):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", None)
-    assert check_delayed_import_hold(fake_supabase, HELD_ID) is None
+def test_a_past_dated_title_without_a_hold_is_no_longer_inferred_as_held(fake_supabase):
+    """
+    The retired rule: active_preorder + past pub date + no arrival meant held.
+    Cleanup is now the correct action for such a title, so it must not block.
+    """
+    fake_supabase.seed("preorder", "product_status", [
+        {"product_id": HELD_ID, "status": "active_preorder", "effective_pub_date": YESTERDAY}
+    ])
+    assert check_active_hold(fake_supabase, HELD_ID) is None
 
 
 # ---- route wiring ----------------------------------------------------------
@@ -121,13 +117,13 @@ def cleanup_client(fake_supabase, monkeypatch):
     "/admin/preorders/cleanup/full/111",
 ])
 def test_held_title_is_refused_with_409(cleanup_client, fake_supabase, path):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", YESTERDAY)
+    seed_hold(fake_supabase)
 
     resp = cleanup_client.post(path)
 
     assert resp.status_code == 409
     detail = resp.json()["detail"]
-    assert detail["reason"] == "delayed_import_hold"
+    assert detail["reason"] == "preorder_hold"
     assert detail["product_id"] == HELD_ID
 
 
@@ -137,7 +133,7 @@ def test_held_title_is_refused_with_409(cleanup_client, fake_supabase, path):
     "/admin/preorders/cleanup/full/111",
 ])
 def test_force_overrides_the_hold(cleanup_client, fake_supabase, path):
-    seed_status(fake_supabase, HELD_ID, "active_preorder", YESTERDAY)
+    seed_hold(fake_supabase)
 
     resp = cleanup_client.post(f"{path}?force=true")
 
@@ -150,7 +146,7 @@ def test_force_overrides_the_hold(cleanup_client, fake_supabase, path):
     "/admin/preorders/cleanup/full/111",
 ])
 def test_unheld_title_proceeds_normally(cleanup_client, fake_supabase, path):
-    seed_status(fake_supabase, HELD_ID, "anomaly_stale_collection", YESTERDAY)
+    seed_hold(fake_supabase, hold_until=YESTERDAY)  # expired: no longer protects
 
     resp = cleanup_client.post(path)
 
@@ -159,7 +155,7 @@ def test_unheld_title_proceeds_normally(cleanup_client, fake_supabase, path):
 
 def test_description_cleanup_is_not_guarded(cleanup_client, fake_supabase):
     """Description cleanup rewrites marketing copy only; it changes no status."""
-    seed_status(fake_supabase, HELD_ID, "active_preorder", YESTERDAY)
+    seed_hold(fake_supabase)
 
     resp = cleanup_client.post("/admin/preorders/cleanup/description/111")
 

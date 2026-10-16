@@ -40,28 +40,33 @@ def _is_structurally_preorder(product: ClassificationInput) -> bool:
     return _has_preorder_tag(product) or _is_in_preorder_collection(product)
 
 
-def _is_delayed_import(product: ClassificationInput, effective_pub_date: date | None) -> bool:
+def _is_held(product: ClassificationInput, effective_pub_date: date | None) -> bool:
     """
-    A delayed import is a title whose pub date has passed but whose stock has
-    never physically arrived (no inventory_arrival record) and which still has
-    open preorder commitments (inventory <= 0). Books imported from overseas can
-    sit in transit past their nominal pub date; customers have ordered and are
-    waiting, so the title is legitimately still an active preorder.
+    A held title stays an active preorder past its pub date because somebody
+    decided so: a signing (`event`) or stock genuinely in transit
+    (`awaiting_stock`). The hold lives in preorder.preorder_hold and carries an
+    end date; `has_active_hold` is True only while it is live, evaluated in ET
+    by services/hold_service.py.
 
-    This case must NOT be treated as anomaly_stale_collection (which implies the
-    book released and someone forgot to remove it from the collection) and must
-    NOT transition to historical_preorder (which implies the book released).
+    This REPLACES the old inferred "delayed import" rule, which treated
+    (past pub date AND no inventory arrival AND inventory <= 0) as a hold and
+    kept such titles active indefinitely. Owner decision 2026-10-15: that
+    inference is wrong. A past-dated title with no stock and no hold is a
+    historical preorder with unresolved commitments, and if it is still in the
+    Preorder collection it needs cleaning up (anomaly_stale_collection).
 
-    Signal: structurally preorder + still in collection + past pub date
-            + no inventory arrival + inventory <= 0.
+    Deliberately NOT conditioned on inventory: an `event` hold usually has stock
+    on hand — the book released and the signing is still to come — and the
+    incentive should keep running. Collection membership IS required: the
+    collection drives the rewards system, so a title removed from it is no
+    longer being held in any meaningful sense.
     """
     return (
-        _is_structurally_preorder(product)
+        product.has_active_hold
+        and _is_structurally_preorder(product)
         and _is_in_preorder_collection(product)
         and effective_pub_date is not None
         and effective_pub_date < date.today()
-        and not product.has_inventory_arrival
-        and product.inventory <= 0
     )
 
 
@@ -81,15 +86,15 @@ def _detect_anomaly(
     # The preorder tag is intentionally retained on historical titles as a marker,
     # so tag presence alone is not the signal — collection membership is.
     #
-    # This only fires when stock actually arrived (has_inventory_arrival). A past-pub
-    # title still in the collection with NO arrival record is a delayed import — the
-    # book is in transit and legitimately still a preorder — not a collection-cleanup
-    # oversight. That case is handled as active_preorder via _is_delayed_import, so we
-    # require has_inventory_arrival here to avoid mislabeling delayed imports.
+    # It no longer requires has_inventory_arrival. That condition existed to protect
+    # inferred "delayed imports" (past pub date, no stock) from being flagged for
+    # cleanup. Holds are explicit now, so the exemption is `has_active_hold`: a held
+    # title is in the collection on purpose. Anything else past its pub date and still
+    # in the collection needs removing, whether or not stock ever arrived.
     if (
         _is_in_preorder_collection(product)
         and _has_preorder_tag(product)
-        and product.has_inventory_arrival
+        and not product.has_active_hold
         and effective_pub_date is not None
         and effective_pub_date < date.today()
         and product.override_date is None
@@ -213,12 +218,12 @@ def _is_active_preorder(product: ClassificationInput, effective_pub_date: date |
         and product.inventory <= 0
     )
 
-    # Delayed-import path: pub date passed but stock never arrived and commitments
-    # remain open. The title stays an active preorder until stock physically lands
-    # (at which point inventory_arrival fires and it transitions to historical).
-    delayed_import = _is_delayed_import(product, effective_pub_date)
+    # Held path: the pub date has passed but an explicit, unexpired hold keeps the
+    # title an active preorder (and in the Preorder collection, which is what drives
+    # the rewards system). See _is_held.
+    held = _is_held(product, effective_pub_date)
 
-    return standard or delayed_import
+    return standard or held
 
 
 def _is_historical_preorder(product: ClassificationInput, effective_pub_date: date | None) -> bool:

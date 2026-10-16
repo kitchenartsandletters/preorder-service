@@ -41,7 +41,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from shopify_client import ShopifyClient
-from services.cleanup_guard import check_delayed_import_hold
+from services.cleanup_guard import check_active_hold
 from services.shopify_cleanup import (
     fetch_cleanup_state,
     analyze_description,
@@ -112,7 +112,7 @@ def _refuse_if_held(product_id: int, force: bool) -> Optional[Dict[str, Any]]:
     Raise 409 when the product is a delayed-import hold and force is not set.
     Returns the hold (or None) so callers can mark a forced run in the log.
     """
-    hold = check_delayed_import_hold(supabase, product_id)
+    hold = check_active_hold(supabase, product_id)
     if hold and not force:
         raise HTTPException(status_code=409, detail=hold)
     return hold

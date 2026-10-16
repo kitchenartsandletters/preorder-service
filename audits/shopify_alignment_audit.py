@@ -10,6 +10,22 @@ from services.supabase_client import get_client as get_supabase_client
 from shopify_service import build_product_metadata_from_shopify
 from classification.engine import classify_preorder_product, ClassificationInput
 from override_service import fetch_override_date
+from services import hold_service
+
+
+def _has_inventory_arrival(supabase, product_id: int) -> bool:
+    """Arrival lookup mirroring orchestrator.classify_and_persist_product."""
+    if not supabase:
+        return False
+    resp = (
+        supabase.schema("preorder")
+        .table("inventory_arrival")
+        .select("product_id")
+        .eq("product_id", product_id)
+        .limit(1)
+        .execute()
+    )
+    return bool(resp.data)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -82,6 +98,13 @@ async def compute_expected_state(
             override_from_db if override_from_db else metadata.override_date_raw
         ),
         inventory=metadata.inventory,
+        # Both of these were missing here, so the audit's "expected" status
+        # disagreed with the orchestrator for any title with an arrival record
+        # (DOCS_STATUS Landmine 4). The full shared-builder fix is rev2 Move 0.4.
+        has_inventory_arrival=_has_inventory_arrival(supabase, product_id),
+        has_active_hold=(
+            hold_service.has_active_hold(supabase, product_id) if supabase else False
+        ),
     )
 
     expected = classify_preorder_product(engine_input)

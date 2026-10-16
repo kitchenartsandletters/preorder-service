@@ -22,6 +22,7 @@ def make_input(
     override_date=None,
     inventory=0,
     has_inventory_arrival=False,   # ← add
+    has_active_hold=False,
 ):
     return ClassificationInput(
         product_id=product_id,
@@ -32,4 +33,5 @@ def make_input(
         override_date=override_date,
         inventory=inventory,
         has_inventory_arrival=has_inventory_arrival,  # ← add
+        has_active_hold=has_active_hold,
     )
