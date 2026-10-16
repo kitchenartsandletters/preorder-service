@@ -110,15 +110,11 @@ def test_missing_tag_blocks_active():
     assert result.status == "anomaly_missing_tag"
 
 
-def test_past_date_no_arrival_is_delayed_import_active():
+def test_past_date_with_an_active_hold_stays_active():
     """
-    Past pub date + in collection + no stock + NO arrival record is a delayed
-    import (stock in transit, commitments open) and is deliberately still
-    active_preorder. See engine._is_delayed_import.
-
-    This replaces `test_no_future_date_blocks_active`, which asserted the
-    pre-delayed-import rule ("a past date blocks active") and had been failing
-    since the delayed-import hold was added.
+    A past pub date keeps a title active only while an explicit hold is live
+    (engine._is_held). The hold is set deliberately — a signing, or stock
+    genuinely in transit — and carries an end date.
     """
     product = make_input(
         tags=["preorder"],
@@ -126,10 +122,30 @@ def test_past_date_no_arrival_is_delayed_import_active():
         pub_date=PAST_DATE,
         inventory=0,
         has_inventory_arrival=False,
+        has_active_hold=True,
     )
     result = classify_preorder_product(product)
     assert result.status == "active_preorder"
     assert result.effective_pub_date == PAST_DATE
+
+
+def test_past_date_without_a_hold_is_not_active():
+    """
+    Same title with no hold: it is no longer an active preorder. Still in the
+    collection, so it reads as stale and needs cleaning up. This retires the
+    old inferred "delayed import", which kept such titles active indefinitely.
+    """
+    product = make_input(
+        tags=["preorder"],
+        in_preorder_collection=True,
+        pub_date=PAST_DATE,
+        inventory=0,
+        has_inventory_arrival=False,
+        has_active_hold=False,
+    )
+    result = classify_preorder_product(product)
+    assert result.status != "active_preorder"
+    assert result.status == "anomaly_stale_collection"
 
 
 def test_past_date_with_arrival_is_not_active():

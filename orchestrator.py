@@ -7,6 +7,7 @@ If you later decide you do want to record “pub date removed” as an event, th
 from typing import List
 
 from classification.engine import classify_preorder_product
+from services import hold_service
 from classification.engine import ClassificationInput, ClassificationResult
 from domain_models import ProductMetadata
 from persistence import persist_classification, persist_inventory_arrival
@@ -62,6 +63,10 @@ def classify_and_persist_product(
 )
     has_inventory_arrival = bool(arrival_response.data)
 
+    # Explicit, unexpired hold (preorder.preorder_hold). Replaces the engine's old
+    # inferred "delayed import" rule; see services/hold_service.py.
+    has_active_hold = hold_service.has_active_hold(supabase, product_metadata.product_id)
+
     engine_input = ClassificationInput(
         product_id=product_metadata.product_id,
         tags=product_metadata.tags,
@@ -75,6 +80,7 @@ def classify_and_persist_product(
         ),
         inventory=product_metadata.inventory,
         has_inventory_arrival=has_inventory_arrival,
+        has_active_hold=has_active_hold,
     )
 
     result = classify_preorder_product(engine_input)

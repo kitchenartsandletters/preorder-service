@@ -86,16 +86,51 @@ def test_metafield_override_used_when_no_db_override(fake_supabase):
     assert result.effective_pub_date == date(2099, 1, 1)
 
 
-def test_inventory_arrival_lookup_changes_classification(fake_supabase):
-    # Past pub date, still in collection, tagged, no stock.
-    # No arrival record  -> delayed import -> active_preorder.
-    product = make_product(pub_date_raw=PAST)
+def test_past_dated_title_in_collection_is_stale_without_a_hold(fake_supabase):
+    """
+    Past pub date, still in collection, tagged, no stock, no hold.
+    Since the inferred delayed-import rule was retired this is stale: it needs
+    removing from the Preorder collection.
+    """
     result = classify_and_persist_product(
-        supabase=fake_supabase, product_metadata=product, engine_version="test-v"
+        supabase=fake_supabase, product_metadata=make_product(pub_date_raw=PAST), engine_version="test-v"
     )
+    assert result.status == "anomaly_stale_collection"
+
+
+def test_an_active_hold_keeps_a_past_dated_title_active(fake_supabase):
+    """The orchestrator reads preorder.preorder_hold and feeds the engine."""
+    fake_supabase.seed("preorder", "preorder_hold", [{
+        "product_id": 1,
+        "hold_until": (date.today() + timedelta(days=5)).isoformat(),
+        "reason": "event",
+        "note": "signing",
+    }])
+
+    result = classify_and_persist_product(
+        supabase=fake_supabase, product_metadata=make_product(pub_date_raw=PAST), engine_version="test-v"
+    )
+
     assert result.status == "active_preorder"
 
-    # Arrival record present -> stock landed, still in collection -> stale.
+
+def test_an_expired_hold_does_not_keep_a_title_active(fake_supabase):
+    fake_supabase.seed("preorder", "preorder_hold", [{
+        "product_id": 1,
+        "hold_until": (date.today() - timedelta(days=1)).isoformat(),
+        "reason": "awaiting_stock",
+        "note": None,
+    }])
+
+    result = classify_and_persist_product(
+        supabase=fake_supabase, product_metadata=make_product(pub_date_raw=PAST), engine_version="test-v"
+    )
+
+    assert result.status == "anomaly_stale_collection"
+
+
+def test_inventory_arrival_lookup_is_still_wired(fake_supabase):
+    """Arrival still matters elsewhere (early stock, pdp cleanup), so keep it pinned."""
     fake_supabase.seed("preorder", "inventory_arrival", [{"product_id": 1}])
     result = classify_and_persist_product(
         supabase=fake_supabase, product_metadata=make_product(pub_date_raw=PAST), engine_version="test-v"
