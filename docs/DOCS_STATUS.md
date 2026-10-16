@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-09-28
+Last updated: 2026-10-16
 
 | Document | Status |
 |---|---|
@@ -42,6 +42,31 @@ re-derive or duplicate them.
   them. To change alert logic, edit the view — never re-derive it inline in the
   metric or in the endpoint. (This retired a recurring class of count/list drift
   bugs; do not reintroduce parallel derivations.)
+- **The no-arrival alert starts at the tracking cutover, 2026-02-11.**
+  `vw_no_arrival_unresolved` filters `effective_pub_date >= '2026-02-11'`
+  because no `inventory_arrival` rows exist before then — "no record" would be
+  meaningless for older titles. On 2026-10-16 the dashboard's Historical ›
+  No Record list showed 5 titles against a pill of 3: the pill (and the
+  `/no-arrival-titles` endpoint) read the view, while the list derived its own
+  filter client-side and swept in two 2025 titles. The count was right. Same
+  rule as PR #21: count and list read ONE view.
+- **Preorder holds are explicit, and expiry is evaluated in ET in one place**
+  (since 2026-10-16). `preorder.preorder_hold` carries `hold_until` (the LAST
+  held day, inclusive), `reason` (`event` | `awaiting_stock`) and a free-text
+  `note`. Whether a hold is live is decided by:
+  - `services/hold_service.is_active()` in Python, and
+  - `vw_preorder_products.hold_active` in SQL, which
+    `vw_preorder_release_queue` re-exposes.
+
+  Both apply the same ET rule. Consumers read the boolean; **nothing
+  re-derives it from dates** — the classifier's own `date.today()` is the
+  container's clock (see Landmine 18), so a date comparison elsewhere would
+  disagree for part of each day.
+- **A past-dated title is active ONLY while a hold is live.** The engine's old
+  inferred "delayed import" rule (past pub date + no arrival => active
+  indefinitely) was retired on 2026-10-15 by owner decision. Without a hold,
+  such a title reads `anomaly_stale_collection` if it is still in the Preorder
+  collection, and `historical_preorder` once removed.
 - **Pub-date history already exists** (verified 2026-09-19):
   `preorder.pubdate_history`, written by
   `orchestrator.classify_and_persist_product` whenever the effective pub date
@@ -621,7 +646,69 @@ or retire the map-based job if the live path fully supersedes it. Decide before
 anything new is built on the map, since arrival records gate
 `has_inventory_arrival` and lifecycle closure.
 
+### Landmine 18: the classifier's clock is the container's, not ET
+
+`classification/engine.py` calls `date.today()`, which is the container's local
+date — UTC on Railway unless TZ is set. The rest of the system is explicitly
+Eastern:
+- `lifecycle_snapshotter` freezes cohorts at ET midnight,
+- reporting week bounds are ET,
+- `services/hold_service.py` and `vw_preorder_products.hold_active` evaluate
+  hold expiry in ET,
+- the admin-dashboard evaluates dates in ET.
+
+**Consequence:** between roughly 8pm and midnight ET, the engine's "today" is
+already tomorrow. A pub date therefore "passes" for classification several
+hours before it passes for everything else. No incident has been traced to
+this, and hold expiry is immune because it is evaluated in ET on both sides.
+
+**Needs:** decide deliberately. Either set `TZ=America/New_York` on the
+services (simple, affects everything at once) or pass an explicit
+`today_et()` into the engine (narrow, testable, and keeps the engine pure).
+Do not fix it piecemeal, which would create exactly the half-ET state this
+entry describes.
+
 ### Resolved
+
+#### The inferred delayed-import hold — REPLACED 2026-10-16 (PRs #37, #38, and the release-queue migration)
+
+Not a landmine, recorded here because it changed classification semantics.
+
+**Was:** the engine inferred a hold from (past pub date AND no inventory
+arrival AND inventory <= 0) and kept such titles `active_preorder`
+indefinitely. "Political Appetites" sat that way past its pub date with 2
+unresolved units, invisible to the No Arrival alert, which only counts
+`historical_preorder`.
+
+**Owner decision (2026-10-15):** once a pub date passes and stock has not
+arrived, a title is a historical preorder with unresolved commitments. The
+only legitimate hold is a deliberate one — a signing, or stock genuinely in
+transit — and it needs an end date.
+
+**Now:**
+- `preorder.preorder_hold` holds `hold_until`, `reason`, `note`, `created_by`
+  (migration `2026_10_create_preorder_hold.sql`).
+- `services/hold_service.py` reads and writes it; `routes/admin_holds.py`
+  exposes `GET/PUT/DELETE /admin/preorders/holds[/{product_id}]` under
+  `X-Admin-Token`, using the lazy Supabase client.
+- `classification.engine._is_held` replaced `_is_delayed_import`. It requires
+  an active hold and collection membership, and is deliberately NOT
+  conditioned on inventory, because an `event` hold usually has stock on hand.
+- `anomaly_stale_collection` no longer requires an arrival record; the
+  exemption is `has_active_hold`.
+- `services/cleanup_guard.py` reads the hold record instead of inferring one;
+  the cleanup routes refuse a held title with 409 and accept `?force=true`.
+- `vw_preorder_products` and `vw_preorder_release_queue` expose `hold_until`,
+  `hold_reason`, `hold_note`, `hold_active`.
+
+**Evidence:** a shadow diff ran the old and new engines over all 28
+in-collection titles — the only ones whose path can change, since both altered
+branches require collection membership — with **zero status changes**. Post-
+deploy, 41 webhook deliveries succeeded with no failures and six titles
+reclassified normally.
+
+**Why `hold_active` is server-side:** see Landmine 18. The dashboard and the
+backend must not each compute expiry.
 
 #### Landmine 12: `InventoryItem.variant` deprecation — RESOLVED 2026-09-22 (PR #29)
 
