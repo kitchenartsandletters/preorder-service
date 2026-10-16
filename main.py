@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from routes.webhooks import router as webhooks_router
-from routes.approvals import router as approvals_router
 from routes.reclassify import router as reclassify_router
 from routes.admin_preorders import router as admin_preorders_router
 from routes.internal_events import router as internal_events_router
@@ -31,8 +30,15 @@ logger = logging.getLogger("uvicorn.error")
 logger.info("🚀 Preorder service fully started and accepting requests")
 
 app.include_router(webhooks_router)
-app.include_router(approvals_router)
 app.include_router(reclassify_router)
+
+# routes/approvals.py is deliberately NOT mounted (docs/DOCS_STATUS.md Landmine 9).
+# It had no auth dependency — the only app-wide middleware is CORS, which
+# restricts browsers, not scripts — and two of its endpoints WROTE to
+# preorder.approvals, including override_pub_date. Nothing calls it: no caller
+# exists in this repo or in admin-dashboard, and the table is dormant (1 row,
+# last touched 2025-11-10). Owner decision 2026-09-22: unmount.
+# tests/test_approvals_unmounted.py fails if it is mounted again without auth.
 
 # admin dashboard API
 app.include_router(admin_preorders_router, prefix="/admin/preorders", tags=["admin_preorders"]) 
