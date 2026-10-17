@@ -5,6 +5,17 @@ This section defines the strict boundary between the two systems.
 
 ---
 
+# 🌿 Branches & deploys
+
+**`main` is the live branch.** Railway auto-deploys on merge to `main`; the branch Railway
+builds is configured in the Railway dashboard, not in this repo. Open every PR against
+`main`, working on short-lived feature branches off `main` and deleting them after merge.
+
+The authoritative copy of this convention lives in `CLAUDE.md` and
+`docs/branches-and-deploys.md`.
+
+---
+
 # 1. webhook-gateway (Upstream Ingest Layer)
 
 ## Responsibilities:
