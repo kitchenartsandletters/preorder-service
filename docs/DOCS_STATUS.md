@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-10-16
+Last updated: 2026-10-17
 
 | Document | Status |
 |---|---|
@@ -289,11 +289,11 @@ select * from preorder.tracking where processing_notes like 'repair 2026-09-21:%
 ```
 
 **Outstanding:**
-1. **#80284 (Oteque, 7-line order)** is deliberately **not** repaired yet.
-   - Its Oteque line shipped, but the fulfillment is also missing
-     (Landmine 14).
-   - Adding only the +1 would create a false open commitment.
-   - Fix it together with Landmine 14.
+1. **#80284 (Oteque, 7-line order)** is still **not** repaired.
+   - Its Oteque line shipped, but the fulfillment was missing (Landmine 14).
+   - The R2 backfill did not cover it: its net is +2, consistent with the
+     pre-log residue described in Landmine 19, not with the multi-line bug.
+   - Fold it into the Landmine 19 pass rather than hand-correcting it.
 2. **Frozen lifecycle snapshots:** the 7 historical titles' presale totals are
    still one short each. Snapshots are write-once, and none were modified.
    Decide on recomputation with Landmine 14, which affects the same snapshots.
@@ -420,53 +420,6 @@ See Incident I1 for the evidence.
   asynchronously. This is gate G5, A1.
 - In webhook-gateway, a separate repo: working retries and replay, a real
   event ID header, and aggregated alerting instead of one issue per failure.
-
-### Landmine 14: multi-line fulfillments under-recorded in the commitment ledger (found 2026-09-21)
-
-**Mechanism:**
-- For `orders/create`, the webhook handler writes **one tracking row per line
-  item**.
-- For `orders/fulfilled`, `_extract_order_facts` returns **a single row for
-  the whole order**.
-- The ledger builder then derives a −row for every fulfilled line from the
-  payload.
-- But `ledger_tracking_unique (tracking_id)` allows only one ledger row per
-  tracking row, and the insert is `ON CONFLICT DO NOTHING`. So **only the
-  first line's fulfillment is recorded; the rest are silently dropped.**
-
-**Evidence, last 30 days as of 2026-09-21:**
-
-| Order type | Fulfilled preorder lines | With a −row |
-|---|---|---|
-| Single-line | 924 | **924** |
-| Multi-line (148 orders) | 228 | **80** |
-
-So **146 shipped units were never subtracted** in 30 days alone. Creations are
-not affected: 664 of 664 multi-line create lines are recorded.
-
-**Impact:**
-- Open commitments are **overstated** for any title sold in multi-line orders.
-- Lifecycle snapshots close only when commitment is ≤ 0, so affected titles
-  may **never close**.
-- Dashboard commitment figures are inflated.
-
-**Unverified:** whether `orders/paid`, `orders/cancelled` and
-`refunds/create` share the defect. They take the same single-row path in
-`_extract_order_facts`. How far back the defect goes is also unknown.
-
-**Scheduled (owner, 2026-09-22):** after the Landmine 9 unmount and **before**
-rev2 Move 0.4. It is the only open item actively corrupting live data, and the
-dashboard shows the inflated figures. It starts read-only; any fix or backfill
-is proposed for approval first, as the R1 repair was.
-
-**Needs:**
-1. A dedicated investigation: the scope by topic and the full history.
-2. A fix, either in the handler (one tracking row per line for every order
-   topic) or in the builder (key idempotency on the per-topic natural keys
-   that already exist, not on `tracking_id`).
-3. A backfill of the missed rows from the stored payloads.
-4. A decision on recomputing affected lifecycle snapshots.
-5. Then complete R1's outstanding order, #80284.
 
 ### Landmine 10: import-time env reads, and admin-auth outliers
 
@@ -647,7 +600,130 @@ services (simple, affects everything at once) or pass an explicit
 Do not fix it piecemeal, which would create exactly the half-ET state this
 entry describes.
 
+### Landmine 19: ~500 units of pre-log commitment residue
+
+After the Landmine 14 fix and the R2 backfill, **64 lifecycle snapshots remain
+open** with a positive commitment: the affected titles carry +3,878 created
+against −3,384 fulfilled. Most are small — 46 are 7 units or fewer — but the
+largest are Franco Pepe (+76) and Eat (Like) the Rich (+56).
+
+**This is NOT the multi-line bug.** That is fixed forward and backfilled. The
+dates point elsewhere: for these titles, 289 `orders/create` rows and 267
+`orders/fulfilled` rows pre-date **2026-03-06**, where gateway payload history
+begins, plus 76 units of `orders/create_backfill`, all pre-log.
+
+**Likely causes**, none recoverable from gateway data:
+- orders created before the logs and fulfilled before them too,
+- cancellations or refunds outside the logged window,
+- backfilled creates whose matching fulfillments were never logged.
+
+**Needs:** a deliberate pass reading order history from the Shopify Admin API
+rather than `public.webhook_logs` — a different exercise with a different risk
+profile, and worth its own dry run. R1's outstanding order #80284 (net +2)
+belongs to this pass.
+
+**Until then:** open commitments on long-settled historical titles may read a
+few units high, and those 64 snapshots will not close on their own.
+
 ### Resolved
+
+#### Landmine 14: multi-line fulfillments under-recorded — RESOLVED 2026-10-17 (PR #41 + repair R2)
+
+**Mechanism.** `_extract_order_facts` wrote one tracking row per line item only
+for `orders/create`, `orders/updated` and `orders/cancelled`. Every other topic,
+including `orders/fulfilled` and `refunds/create`, produced a single row for the
+whole order. The ledger builder derives a row per line, but
+`ledger_tracking_unique (tracking_id)` admits one ledger row per tracking row
+with `ON CONFLICT DO NOTHING`, so the tracking-row count capped the ledger rows:
+on a multi-line order only the first line was recorded.
+
+**Scale, 12 months to 2026-10-16:** 1,433 of 4,822 fulfilled preorder lines
+(~1,555 units) never subtracted, roughly 30%, steady month over month. 68 of 72
+open lifecycle snapshots could not close, since closure needs commitment <= 0.
+
+**Fix (PR #41):** every order topic now writes one tracking row per line, and
+`refunds/create` gained its own branch — refunds nest the original line under
+`refund_line_items[].line_item`, and `payload.id` is the REFUND id, so the order
+id comes from `order_id`. Verified in production 2026-10-16/17: order #88063
+(3 lines) produced 3 tracking rows and 3 ledger rows, netting 0; #88049 and
+#88064 likewise. Under the old code #88063 would have recorded one line of three.
+
+**Repair R2, executed 2026-10-17 14:56:41 UTC.**
+- 1,450 tracking rows written (1,435 fulfillments, 15 refunds) across 1,039
+  orders and 167 titles, rebuilt from `public.webhook_logs` payloads back to
+  2026-03-06 (none archived).
+- As with R1, the repair writes TRACKING rows and lets the standard builder
+  derive the ledger, so one code path stays authoritative and the per-topic
+  unique indexes prevent double counting.
+- The builder then wrote 1,515 fulfillment rows (−1,601 units) and 17 refund
+  rows (−18). More than 1,450 because each repair row's payload also covers its
+  sibling lines; the extras were absorbed by the unique indexes.
+- Scope was **preorder titles only**: 19,693 lines were missing in total, but
+  the other ~18,000 are ordinary retail lines that nothing reads.
+
+**Find the repair rows** (the marker says 2026-10-16; it was drafted the day
+before it ran):
+
+```sql
+select * from preorder.tracking where processing_notes like 'repair 2026-10-16:%';
+```
+
+**A guard earned its keep.** The dry run counted 1,436 fulfilled lines; by
+execution time it was 1,435, because a fulfillment had been correctly recorded
+by the new code in between. The frozen-count guard refused the write; it was
+replaced with a range check, and the final insert asserts it matches what was
+selected.
+
+**Residue:** 64 snapshots remain open for a different reason — see Landmine 19.
+
+The original entry is preserved below.
+
+##### (original) Landmine 14: multi-line fulfillments under-recorded in the commitment ledger (found 2026-09-21)
+
+**Mechanism:**
+- For `orders/create`, the webhook handler writes **one tracking row per line
+  item**.
+- For `orders/fulfilled`, `_extract_order_facts` returns **a single row for
+  the whole order**.
+- The ledger builder then derives a −row for every fulfilled line from the
+  payload.
+- But `ledger_tracking_unique (tracking_id)` allows only one ledger row per
+  tracking row, and the insert is `ON CONFLICT DO NOTHING`. So **only the
+  first line's fulfillment is recorded; the rest are silently dropped.**
+
+**Evidence, last 30 days as of 2026-09-21:**
+
+| Order type | Fulfilled preorder lines | With a −row |
+|---|---|---|
+| Single-line | 924 | **924** |
+| Multi-line (148 orders) | 228 | **80** |
+
+So **146 shipped units were never subtracted** in 30 days alone. Creations are
+not affected: 664 of 664 multi-line create lines are recorded.
+
+**Impact:**
+- Open commitments are **overstated** for any title sold in multi-line orders.
+- Lifecycle snapshots close only when commitment is ≤ 0, so affected titles
+  may **never close**.
+- Dashboard commitment figures are inflated.
+
+**Unverified:** whether `orders/paid`, `orders/cancelled` and
+`refunds/create` share the defect. They take the same single-row path in
+`_extract_order_facts`. How far back the defect goes is also unknown.
+
+**Scheduled (owner, 2026-09-22):** after the Landmine 9 unmount and **before**
+rev2 Move 0.4. It is the only open item actively corrupting live data, and the
+dashboard shows the inflated figures. It starts read-only; any fix or backfill
+is proposed for approval first, as the R1 repair was.
+
+**Needs:**
+1. A dedicated investigation: the scope by topic and the full history.
+2. A fix, either in the handler (one tracking row per line for every order
+   topic) or in the builder (key idempotency on the per-topic natural keys
+   that already exist, not on `tracking_id`).
+3. A backfill of the missed rows from the stored payloads.
+4. A decision on recomputing affected lifecycle snapshots.
+5. Then complete R1's outstanding order, #80284.
 
 #### Landmine 9: unauthenticated `/approvals` router — RESOLVED 2026-10-16 (unmounted)
 
