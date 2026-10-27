@@ -37,7 +37,7 @@ CTX = {
 def test_extracts_exactly_the_covered_read_queries():
     ops = smoke.extract_operations()
     assert set(ops) == set(smoke.VARIABLE_FACTORIES)
-    assert len(ops) == 15
+    assert len(ops) == 16
 
 
 def test_every_query_bearing_file_is_covered_or_explicitly_excluded():
