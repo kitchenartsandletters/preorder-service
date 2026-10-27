@@ -36,7 +36,7 @@ async def test_build_metadata_from_product_id_basic(mock_shopify_client):
             },
             "metafields": {
                 "nodes": [
-                    {"key": "preorder_override_date", "value": "2026-05-01"}
+                    {"key": "pub_date", "value": "2026-05-01"}
                 ]
             },
             "variants": {
@@ -57,7 +57,6 @@ async def test_build_metadata_from_product_id_basic(mock_shopify_client):
     assert metadata.product_id == 123
     assert metadata.in_preorder_collection is True
     assert "preorder" in metadata.tags
-    assert metadata.override_date_raw == "2026-05-01"
     assert metadata.inventory == 8
     assert "2026-04-01" in metadata.date_tags_raw
 
@@ -195,11 +194,11 @@ async def test_missing_inventory_item_raises(mock_shopify_client):
 
 
 # ---------------------------------------------------------
-# METAFIELD ABSENT
+# METAFIELDS ABSENT
 # ---------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_override_metafield_none(mock_shopify_client):
+async def test_metafields_absent_is_fine(mock_shopify_client):
     mock_shopify_client.graphql.return_value = {
         "product": {
             "id": "gid://shopify/Product/123",
@@ -213,4 +212,4 @@ async def test_override_metafield_none(mock_shopify_client):
 
     metadata = await build_product_metadata_from_shopify(product_id=123, client=mock_shopify_client)
 
-    assert metadata.override_date_raw is None
+    assert metadata.pub_date_raw is None

@@ -244,7 +244,6 @@ def classify_and_persist_product(
         "tags": product_metadata.tags,
         "pub_date": product_metadata.pub_date_raw,
         "inventory": product_metadata.inventory,
-        "override_date": product_metadata.override_date_raw,
         "in_preorder_collection": product_metadata.in_preorder_collection,
     }
 

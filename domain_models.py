@@ -22,7 +22,6 @@ class ProductMetadata:
     in_preorder_collection: bool
     date_tags_raw: List[str]
     pub_date_raw: Optional[date]
-    override_date_raw: Optional[date]
     inventory: int
     title: Optional[str] = None
     vendor: Optional[str] = None
@@ -48,6 +47,5 @@ class ProductMetadata:
             "in_preorder_collection": self.in_preorder_collection,
             "date_tags": self.parsed_date_tags(),
             "pub_date": self.pub_date_raw,
-            "override_date": self.override_date_raw,
             "inventory": self.inventory,
         }

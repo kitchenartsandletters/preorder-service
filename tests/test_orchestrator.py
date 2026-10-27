@@ -33,7 +33,6 @@ def make_product(**overrides) -> ProductMetadata:
         in_preorder_collection=True,
         date_tags_raw=[],
         pub_date_raw=FUTURE,
-        override_date_raw=None,
         inventory=0,
     )
     base.update(overrides)
