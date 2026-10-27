@@ -14,7 +14,7 @@ the tests failed (or, worse, passed while asserting nothing). This fake:
 
 - Mirrors the call chains production actually uses:
   `.schema(name).table(name)`, `.select()`, `.eq()`, `.neq()`, `.in_()`,
-  `.lte()`, `.gte()`, `.is_()`, `.not_.in_()`, `.limit()`, `.order()`, `.single()`,
+  `.lte()`, `.gte()`, `.is_()`, `.not_.in_()`, `.limit()`, `.range()`, `.order()`, `.single()`,
   `.maybe_single()`, `.insert()`, `.upsert(on_conflict=)`, `.update()`,
   `.delete()`, `.execute()`.
 - Stores rows per (schema, table), so tests assert on resulting STATE
@@ -50,6 +50,7 @@ class _Query:
     on_conflict: Optional[str] = None
     filters: List[Tuple[str, str, Any]] = field(default_factory=list)
     limit_n: Optional[int] = None
+    range_bounds: Optional[Tuple[int, int]] = None
     single_mode: Optional[str] = None  # None | "single" | "maybe_single"
     order_by: Optional[Tuple[str, bool]] = None
 
@@ -108,6 +109,11 @@ class _Query:
         self.limit_n = n
         return self
 
+    def range(self, start, end):
+        """postgrest `.range(start, end)` - inclusive bounds, like PostgREST."""
+        self.range_bounds = (start, end)
+        return self
+
     def order(self, col, desc: bool = False, **_kw):
         self.order_by = (col, desc)
         return self
@@ -164,6 +170,9 @@ class _Query:
             if self.order_by:
                 col, desc = self.order_by
                 found.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
+            if self.range_bounds is not None:
+                start, end = self.range_bounds
+                found = found[start : end + 1]
             if self.limit_n is not None:
                 found = found[: self.limit_n]
             if self.single_mode == "maybe_single":

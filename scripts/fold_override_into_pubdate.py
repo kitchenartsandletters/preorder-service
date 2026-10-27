@@ -82,16 +82,39 @@ def _as_date(value: Any) -> Optional[date]:
         return None
 
 
+#: PostgREST returns at most 1000 rows per request by default. product_status
+#: holds ~15,400 rows, so an unpaginated read silently returns the first page
+#: only — which on 2026-10-27 made this script find 5 of 38 overrides and miss
+#: all three override conflicts. Always page.
+PAGE_SIZE = 1000
+MAX_PAGES = 100
+
+
+def _fetch_all_product_status(supabase, product_ids: Optional[List[int]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for page in range(MAX_PAGES):
+        query = (
+            supabase.schema("preorder")
+            .table("product_status")
+            .select("product_id, status, effective_pub_date, metadata_snapshot")
+            .order("product_id")
+            .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+        )
+        if product_ids:
+            query = query.in_("product_id", product_ids)
+        batch = query.execute().data or []
+        rows.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            return rows
+    raise RuntimeError(
+        f"product_status exceeded {MAX_PAGES * PAGE_SIZE} rows while paging; "
+        "refusing to continue on a partial read"
+    )
+
+
 def candidate_products(supabase, product_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """Products whose snapshot carries an override. Shopify is re-read per product."""
-    query = (
-        supabase.schema("preorder")
-        .table("product_status")
-        .select("product_id, status, effective_pub_date, metadata_snapshot")
-    )
-    if product_ids:
-        query = query.in_("product_id", product_ids)
-    rows = query.execute().data or []
+    rows = _fetch_all_product_status(supabase, product_ids)
 
     candidates = []
     for row in rows:

@@ -77,6 +77,33 @@ def wired(fake_supabase, monkeypatch):
     return _wire
 
 
+def test_candidates_are_found_beyond_the_first_postgrest_page(fake_supabase):
+    """
+    Regression, 2026-10-27: candidate_products read product_status without
+    paging and filtered in Python. PostgREST caps a response at 1000 rows, so
+    with ~15,400 products the script saw only the first page and found 5 of 38
+    overrides — missing all three override conflicts. A dry run looked clean.
+    """
+    bulk = [
+        {"product_id": i, "status": "not_a_preorder_product", "effective_pub_date": None,
+         "metadata_snapshot": {"title": f"filler {i}", "pub_date": PUB}}
+        for i in range(1, 2501)
+    ]
+    seed(fake_supabase, bulk)
+    seed(fake_supabase, [status_row(9001, PUB, LATER), status_row(9002, PUB, EARLIER)])
+
+    found = fold.candidate_products(fake_supabase)
+
+    assert sorted(c["product_id"] for c in found) == [9001, 9002], (
+        "overrides beyond the first 1000-row page must still be found"
+    )
+
+
+def test_paging_stops_when_a_short_page_returns(fake_supabase):
+    seed(fake_supabase, [status_row(1, PUB, LATER)])
+    assert len(fold.candidate_products(fake_supabase)) == 1
+
+
 def test_candidates_are_only_products_with_an_override(fake_supabase):
     seed(fake_supabase, [status_row(1, PUB, LATER),
                          {"product_id": 2, "status": "active_preorder", "effective_pub_date": PUB,
