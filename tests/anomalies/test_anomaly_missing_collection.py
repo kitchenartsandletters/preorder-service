@@ -68,12 +68,12 @@ def test_missing_collection_future_pub_date_only():
     _assert_missing_collection(result)
 
 
-def test_missing_collection_future_override_date_only():
-    """Tag present, collection=False, future override_date only → anomaly_missing_collection."""
+def test_missing_collection_future_pub_date_only():
+    """Tag present, collection=False, future pub_date → anomaly_missing_collection."""
     product = make_input(
         tags=["preorder"],
         in_preorder_collection=False,
-        override_date=FUTURE_DATE,
+        pub_date=FUTURE_DATE,
         inventory=-2,
     )
     result = classify_preorder_product(product)

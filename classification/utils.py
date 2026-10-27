@@ -25,16 +25,19 @@ def resolve_effective_pub_date(
     *,
     date_tags: List[date],
     pub_date: Optional[date],
-    override_date: Optional[date],
 ) -> Optional[date]:
     """
     Resolve the single authoritative publication date for a product.
 
-    Priority order (Rev 3 — FINAL):
-        1. override_date
-        2. pub_date
-        3. latest date_tag (chronologically max)
-        4. None
+    Priority order:
+        1. pub_date
+        2. latest date_tag (chronologically max)
+        3. None
+
+    `override_date` was removed in rev2 Move 1e. Its values were folded into
+    pub_date on 2026-10-27 (37 products, migration recorded in
+    preorder.pubdate_history as override_migration), so pub_date is now the
+    single source of truth (decision D1).
 
     IMPORTANT NOTES:
     - date_tags may be unsorted; ordering MUST NOT be trusted.
@@ -49,9 +52,6 @@ def resolve_effective_pub_date(
         Parsed publication date tags (MM-DD-YYYY → date)
     pub_date : Optional[date]
         Primary publication date metafield (YYYY-MM-DD)
-    override_date : Optional[date]
-        Override publication date metafield (YYYY-MM-DD)
-
     Returns
     -------
     Optional[date]
@@ -59,9 +59,6 @@ def resolve_effective_pub_date(
     """
 
     # PHASE 1 IMPLEMENTATION (minimal, deterministic)
-
-    if override_date is not None:
-        return override_date
 
     if pub_date is not None:
         return pub_date

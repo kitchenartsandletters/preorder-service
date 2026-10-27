@@ -56,7 +56,6 @@ def test_tag_present_no_date_info_at_all():
         in_preorder_collection=False,
         date_tags=[],
         pub_date=None,
-        override_date=None,
         inventory=10,
     )
     result = classify_preorder_product(product)

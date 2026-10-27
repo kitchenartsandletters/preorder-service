@@ -35,7 +35,6 @@ def test_multiple_tags_no_pub_or_override():
         in_preorder_collection=True,
         date_tags=[PAST_DATE, FUTURE_DATE],
         pub_date=None,
-        override_date=None,
         inventory=0,
     )
     result = classify_preorder_product(product)
@@ -49,27 +48,12 @@ def test_not_triggered_when_pub_date_matches_latest_tag():
         in_preorder_collection=True,
         date_tags=[PAST_DATE, FUTURE_DATE],
         pub_date=FUTURE_DATE,
-        override_date=None,
         inventory=0,
     )
     result = classify_preorder_product(product)
 
     assert result.status != "anomaly_multi_date_conflict"
 
-
-def test_not_triggered_when_override_exists():
-    """If override_date exists, do NOT classify as anomaly_multi_date_conflict."""
-    product = make_input(
-        tags=["preorder"],
-        in_preorder_collection=True,
-        date_tags=[PAST_DATE, FUTURE_DATE],
-        pub_date=None,
-        override_date=FUTURE_DATE,
-        inventory=0,
-    )
-    result = classify_preorder_product(product)
-
-    assert result.status != "anomaly_multi_date_conflict"
 
 
 def test_date_tag_order_does_not_matter():
@@ -79,7 +63,6 @@ def test_date_tag_order_does_not_matter():
         in_preorder_collection=True,
         date_tags=[FUTURE_DATE, PAST_DATE],
         pub_date=None,
-        override_date=None,
         inventory=5,
     )
     result = classify_preorder_product(product)

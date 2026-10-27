@@ -9,7 +9,6 @@ from shopify_client import ShopifyClient
 from services.supabase_client import get_client as get_supabase_client
 from shopify_service import build_product_metadata_from_shopify
 from classification.engine import classify_preorder_product, ClassificationInput
-from override_service import fetch_override_date
 from services import hold_service
 
 
@@ -81,12 +80,6 @@ async def compute_expected_state(
             "effective_pub_date": None,
         }
 
-    override_from_db = None
-    if supabase:
-        override_from_db = fetch_override_date(
-            supabase=supabase,
-            product_id=product_id,
-        )
 
     engine_input = ClassificationInput(
         product_id=metadata.product_id,
@@ -94,9 +87,6 @@ async def compute_expected_state(
         in_preorder_collection=metadata.in_preorder_collection,
         date_tags=metadata.parsed_date_tags(),
         pub_date=_parse_date(metadata.pub_date_raw),
-        override_date=_parse_date(
-            override_from_db if override_from_db else metadata.override_date_raw
-        ),
         inventory=metadata.inventory,
         # Both of these were missing here, so the audit's "expected" status
         # disagreed with the orchestrator for any title with an arrival record
@@ -140,12 +130,6 @@ async def audit_product(
                 "reason": "shopify_metadata_null"
             }
 
-        # 2. Fetch DB override (authoritative)
-        override_from_db = fetch_override_date(
-            supabase=supabase,
-            product_id=product_id,
-        )
-
         # 3. Build ClassificationInput (mirror orchestrator)
         engine_input = ClassificationInput(
             product_id=metadata.product_id,
@@ -153,9 +137,6 @@ async def audit_product(
             in_preorder_collection=metadata.in_preorder_collection,
             date_tags=metadata.parsed_date_tags(),
             pub_date=_parse_date(metadata.pub_date_raw),
-            override_date=_parse_date(
-                override_from_db if override_from_db else metadata.override_date_raw
-            ),
             inventory=metadata.inventory,
         )
 

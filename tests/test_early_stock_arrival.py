@@ -62,11 +62,11 @@ def _assert_early_stock(result):
     assert result.anomaly_type is None
 
 
-def test_future_override_inventory_positive():
+def test_future_pub_date_inventory_positive():
     product = make_input(
         tags=["preorder"],
         in_preorder_collection=True,
-        override_date=FUTURE_DATE,
+        pub_date=FUTURE_DATE,
         inventory=5,
     )
     result = classify_preorder_product(product)
