@@ -63,6 +63,22 @@ async def _ingest(request: Request,
     return payload, headers
 
 async def _insert_tracking(pool, row: dict):
+    """
+    Insert one tracking row, ignoring an exact redelivery.
+
+    preorder.tracking is one row per line item, and the unique key is
+    (event_id, line_item_id) NULLS NOT DISTINCT. Until 2026-10-27 the key was
+    event_id alone, which only worked because an empty X-Gateway-Event-ID made
+    this service mint a fresh UUID per row; with the gateway sending a real,
+    stable id every line after the first violated it and the request 500'd
+    (webhook-gateway commit 0998d48 disabled the header as a result).
+
+    ON CONFLICT DO NOTHING is the other half of that fix: a gateway redelivery
+    of an event already stored must be a no-op 200, not a 500 that the gateway
+    retries forever. Dedupe is unaffected — a genuinely new line has a
+    different line_item_id, and NULLS NOT DISTINCT keeps one-row-per-event
+    topics (products/update, inventory_levels/update) deduped on event_id.
+    """
     await pool.execute("""
         insert into preorder.tracking (
             event_id, topic, shop_domain, source_service,
@@ -76,6 +92,7 @@ async def _insert_tracking(pool, row: dict):
             $9, $10, $11, $12, $13,
             $14, $15, $16, $17, $18, $19
         )
+        on conflict (event_id, line_item_id) do nothing
     """,
         row.get("event_id"),
         row.get("topic"),
