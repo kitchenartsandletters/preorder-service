@@ -4,7 +4,8 @@ If you later decide you do want to record “pub date removed” as an event, th
 	•	record removals in a different column / event table.
 """
 
-from typing import List
+import logging
+from typing import List, Optional
 
 from classification.engine import classify_preorder_product
 from services import hold_service
@@ -15,10 +16,58 @@ from datetime import date
 from datetime import datetime, UTC
 from override_service import fetch_override_date
 
+logger = logging.getLogger(__name__)
+
+
+def _consume_write_intent(supabase, product_id: int, new_pub_date) -> Optional[dict]:
+    """
+    Claim an open write intent matching this product and date, if one exists.
+
+    The sanctioned pub-date editor (rev2 Move 1c) records an intent immediately
+    before calling metafieldsSet. Shopify then sends products/update for that
+    same edit, and without the intent this orchestrator would label it
+    shopify_direct_edit — i.e. report the dashboard's own write as an
+    out-of-band change. Claiming the intent labels it ui_change and carries the
+    operator's identity and reason into the history row.
+
+    Returns the claimed intent, or None when the change did not come from the
+    dashboard (a genuine direct edit in Shopify admin).
+    """
+    if new_pub_date is None:
+        return None
+    try:
+        open_intents = (
+            supabase.schema("preorder")
+            .table("pubdate_write_intent")
+            .select("id, changed_by, reason, created_at")
+            .eq("product_id", product_id)
+            .eq("new_date", new_pub_date.isoformat())
+            .is_("consumed_at", "null")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = open_intents.data or []
+        if not rows:
+            return None
+        intent = rows[0]
+        supabase.schema("preorder").table("pubdate_write_intent").update(
+            {"consumed_at": datetime.now(UTC).isoformat()}
+        ).eq("id", intent["id"]).execute()
+        return intent
+    except Exception as exc:
+        # A missing intent must never block classification: worst case the
+        # change is labelled shopify_direct_edit, which is merely less precise.
+        logger.warning(f"[orchestrator] write-intent lookup failed for {product_id}: {exc}")
+        return None
+
+
 def classify_and_persist_product(
     supabase,
     product_metadata: ProductMetadata,
     engine_version: str = "v1",
+    change_source: Optional[str] = None,
+    change_metadata: Optional[dict] = None,
 ) -> ClassificationResult:
     """
     Deterministic orchestration layer.
@@ -137,26 +186,46 @@ def classify_and_persist_product(
         # If we are "losing" a pub date (new resolves to None), do NOT write a history row.
         # `pubdate_history.new_effective_pub_date` is NOT NULL.
         if stored_pub_date != normalized_resolved_pub_date and normalized_resolved_pub_date is not None:
-            # Determine change source
-            if engine_input.override_date is not None:
-                change_source = "override_date"
-            elif engine_input.pub_date is not None:
-                change_source = "shopify_pub_date"
+            # Who changed it?
+            #   - an explicit change_source from a caller (the pub-date editor
+            #     passes "ui_change") always wins;
+            #   - otherwise an open write intent means the dashboard made this
+            #     edit and Shopify is echoing it back;
+            #   - otherwise somebody edited the product in Shopify admin, which
+            #     is recorded, not rejected (rev2 D9).
+            # "shopify_pub_date" is retired here: it described the mechanism
+            # rather than the actor, and said nothing about who made the change.
+            row_metadata = dict(change_metadata or {})
+            if change_source:
+                resolved_source = change_source
             else:
-                change_source = "legacy_tag_fallback"
+                intent = _consume_write_intent(
+                    supabase, product_metadata.product_id, normalized_resolved_pub_date
+                )
+                if intent:
+                    resolved_source = "ui_change"
+                    row_metadata.setdefault("changed_by", intent.get("changed_by"))
+                    row_metadata.setdefault("reason", intent.get("reason"))
+                    row_metadata.setdefault("intent_id", intent.get("id"))
+                else:
+                    resolved_source = "shopify_direct_edit"
+
+            history_row = {
+                "product_id": product_metadata.product_id,
+                "old_effective_pub_date": stored_pub_date.isoformat() if stored_pub_date else None,
+                "new_effective_pub_date": normalized_resolved_pub_date.isoformat(),
+                "change_source": resolved_source,
+                "engine_version": engine_version,
+                "changed_at": datetime.now(UTC).isoformat(),
+            }
+            if row_metadata:
+                history_row["metadata"] = row_metadata
 
             (
                 supabase
                 .schema("preorder")
                 .table("pubdate_history")
-                .insert({
-                    "product_id": product_metadata.product_id,
-                    "old_effective_pub_date": stored_pub_date.isoformat() if stored_pub_date else None,
-                    "new_effective_pub_date": normalized_resolved_pub_date.isoformat(),
-                    "change_source": change_source,
-                    "engine_version": engine_version,
-                    "changed_at": datetime.now(UTC).isoformat(),
-                })
+                .insert(history_row)
                 .execute()
             )
 

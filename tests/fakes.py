@@ -14,7 +14,7 @@ the tests failed (or, worse, passed while asserting nothing). This fake:
 
 - Mirrors the call chains production actually uses:
   `.schema(name).table(name)`, `.select()`, `.eq()`, `.neq()`, `.in_()`,
-  `.lte()`, `.gte()`, `.not_.in_()`, `.limit()`, `.order()`, `.single()`,
+  `.lte()`, `.gte()`, `.is_()`, `.not_.in_()`, `.limit()`, `.order()`, `.single()`,
   `.maybe_single()`, `.insert()`, `.upsert(on_conflict=)`, `.update()`,
   `.delete()`, `.execute()`.
 - Stores rows per (schema, table), so tests assert on resulting STATE
@@ -86,6 +86,11 @@ class _Query:
         self.filters.append(("in", col, list(values)))
         return self
 
+    def is_(self, col, value):
+        """postgrest `.is_(col, "null")` / `.is_(col, "not.null")`."""
+        self.filters.append(("is", col, value))
+        return self
+
     def lte(self, col, val):
         self.filters.append(("lte", col, val))
         return self
@@ -127,6 +132,12 @@ class _Query:
                 return False
             if kind == "not_in" and have in val:
                 return False
+            if kind == "is":
+                wants_null = str(val).lower() in ("null", "none")
+                if wants_null and have is not None:
+                    return False
+                if not wants_null and have is None:
+                    return False
             # Range filters follow PostgREST: NULL never matches.
             if kind == "lte" and (have is None or have > val):
                 return False
