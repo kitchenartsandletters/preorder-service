@@ -260,10 +260,6 @@ async def build_product_metadata_from_shopify(
     ]
     in_preorder_collection = _is_in_preorder_collection(collection_handles)
     metafield_nodes = product.get("metafields", {}).get("nodes", [])
-    override_date_raw = _metafield_value(
-        metafield_nodes,
-        "preorder_override_date",
-    )
     pub_date_raw = _metafield_value(
         metafield_nodes,
         "pub_date",
@@ -281,7 +277,6 @@ async def build_product_metadata_from_shopify(
 
         tags=_split_tags(product.get("tags")),
         in_preorder_collection=in_preorder_collection,
-        override_date_raw=override_date_raw,
         pub_date_raw=pub_date_raw,
         date_tags_raw=_extract_date_tags_raw(_split_tags(product.get("tags"))),
 

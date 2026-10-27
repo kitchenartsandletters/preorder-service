@@ -20,7 +20,6 @@ EXPECTED_TABLES = {
     "pubdate_history",
     "commitment_ledger",
     "inventory_item_map",
-    "product_overrides",
 }
 
 

@@ -27,7 +27,6 @@ SNAPSHOT_KEYS = {
     "tags",
     "pub_date",
     "inventory",
-    "override_date",
     "in_preorder_collection",
 }
 
@@ -92,7 +91,7 @@ def test_payload_fields_and_serialization(fake_supabase):
     assert snap["product_id"] == 999
     assert snap["tags"] == ["preorder"]
     assert snap["inventory"] == 0
-    assert snap["title"] is None and snap["override_date"] is None
+    assert snap["title"] is None and snap["vendor"] is None
 
 
 def test_missing_date_and_snapshot_persist_as_none(fake_supabase):

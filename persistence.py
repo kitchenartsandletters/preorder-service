@@ -39,7 +39,6 @@ def persist_classification(
             "tags": metadata_snapshot.get("tags"),
             "pub_date": metadata_snapshot.get("pub_date"),
             "inventory": metadata_snapshot.get("inventory"),
-            "override_date": metadata_snapshot.get("override_date"),
             "in_preorder_collection": metadata_snapshot.get("in_preorder_collection"),
         }
 
