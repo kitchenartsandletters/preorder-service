@@ -57,6 +57,7 @@ from shopify_version import DEFAULT_SHOPIFY_API_VERSION, get_api_version  # noqa
 SOURCE_FILES = [
     "shopify_client.py",
     "shopify_service.py",
+    "services/pubdate_service.py",
     "services/shipping_profiles.py",
     "services/shopify_cleanup.py",
     "services/weekly_release_engine.py",
@@ -114,6 +115,9 @@ def _since(days: int) -> str:
 
 VARIABLE_FACTORIES: Dict[Key, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     ("shopify_client.py", "GetProduct"): lambda c: {"id": c["product_gid"]},
+    ("services/pubdate_service.py", "PubDateState"): lambda c: {
+        "id": c["product_gid"], "namespace": "custom", "key": "pub_date",
+    },
     ("shopify_service.py", "ProductFull"): lambda c: {
         "id": c["product_gid"], "collectionsFirst": 250, "variantsFirst": 250, "metafieldsFirst": 50,
     },
