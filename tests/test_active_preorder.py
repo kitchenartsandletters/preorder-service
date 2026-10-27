@@ -65,18 +65,18 @@ def test_tag_and_collection_future_date_tag_only_inventory_zero():
         in_preorder_collection=True,
         date_tags=[FUTURE_DATE],
         pub_date=None,
-        override_date=None,
         inventory=0,
     )
     result = classify_preorder_product(product)
     assert result.status == "active_preorder"
 
 
-def test_tag_and_collection_future_override_inventory_zero():
+def test_tag_and_collection_future_pub_date_inventory_zero_again():
+    """Was an override-supplied date; the override is retired (Move 1e)."""
     product = make_input(
         tags=["preorder"],
         in_preorder_collection=True,
-        override_date=FUTURE_DATE,
+        pub_date=FUTURE_DATE,
         inventory=0,
     )
     result = classify_preorder_product(product)
@@ -172,7 +172,6 @@ def test_no_date_metadata_blocks_active():
         tags=["preorder"],
         in_preorder_collection=True,
         pub_date=None,
-        override_date=None,
         date_tags=[],
         inventory=0,
     )

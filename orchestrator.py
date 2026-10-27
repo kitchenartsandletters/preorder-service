@@ -14,7 +14,6 @@ from domain_models import ProductMetadata
 from persistence import persist_classification, persist_inventory_arrival
 from datetime import date
 from datetime import datetime, UTC
-from override_service import fetch_override_date
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +81,10 @@ def classify_and_persist_product(
     No side effects beyond persistence.
     """
 
-    # Fetch authoritative override from DB (if any)
-    override_from_db = fetch_override_date(
-        supabase=supabase,
-        product_id=product_metadata.product_id,
-    )
-
-    if override_from_db is not None:
-        product_metadata.override_date_raw = override_from_db
+    # The override metafield and preorder.product_overrides are retired
+    # (rev2 Move 1e). Values were folded into pub_date on 2026-10-27, so
+    # pub_date is the single source of truth. override_service and the table
+    # itself are removed in 1g.
 
     # Parse raw ISO date strings into date objects for engine
     def _parse_date(raw):
@@ -122,11 +117,6 @@ def classify_and_persist_product(
         in_preorder_collection=product_metadata.in_preorder_collection,
         date_tags=product_metadata.parsed_date_tags(),
         pub_date=_parse_date(product_metadata.pub_date_raw),
-        override_date=_parse_date(
-            override_from_db
-            if override_from_db is not None
-            else product_metadata.override_date_raw
-        ),
         inventory=product_metadata.inventory,
         has_inventory_arrival=has_inventory_arrival,
         has_active_hold=has_active_hold,

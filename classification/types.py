@@ -11,7 +11,6 @@ class ClassificationInput:
     in_preorder_collection: bool
     date_tags: List[date]
     pub_date: Optional[date]
-    override_date: Optional[date]
     inventory: int
     has_inventory_arrival: bool = False   # New field to indicate if there's an inventory arrival event for this product
     has_active_hold: bool = False         # Live row in preorder.preorder_hold (see services/hold_service.py)

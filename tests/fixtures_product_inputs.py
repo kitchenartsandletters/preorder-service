@@ -19,7 +19,6 @@ def make_input(
     in_preorder_collection=False,
     date_tags=None,
     pub_date=None,
-    override_date=None,
     inventory=0,
     has_inventory_arrival=False,   # ← add
     has_active_hold=False,
@@ -30,7 +29,6 @@ def make_input(
         in_preorder_collection=in_preorder_collection,
         date_tags=date_tags or [],
         pub_date=pub_date,
-        override_date=override_date,
         inventory=inventory,
         has_inventory_arrival=has_inventory_arrival,  # ← add
         has_active_hold=has_active_hold,

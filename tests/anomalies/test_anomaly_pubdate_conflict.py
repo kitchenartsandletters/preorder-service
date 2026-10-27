@@ -48,7 +48,6 @@ def test_single_tag_no_override_pubdate_mismatch():
         in_preorder_collection=True,
         date_tags=[FUTURE_DATE],
         pub_date=MID_DATE,
-        override_date=None,
         inventory=0,
     )
     result = classify_preorder_product(product)
@@ -62,7 +61,6 @@ def test_multiple_tags_no_override_pubdate_not_latest():
         in_preorder_collection=True,
         date_tags=[PAST_DATE, FUTURE_DATE],
         pub_date=PAST_DATE,
-        override_date=None,
         inventory=0,
     )
     result = classify_preorder_product(product)
@@ -79,28 +77,9 @@ def test_pubdate_and_tags_disagree_without_override():
         in_preorder_collection=True,
         date_tags=[PAST_DATE, MID_DATE, FUTURE_DATE],
         pub_date=MID_DATE,
-        override_date=None,
         inventory=5,
     )
     result = classify_preorder_product(product)
     _assert_pubdate_conflict(result)
 
 
-def test_conflict_should_be_override_conflict_not_pubdate_conflict():
-    """
-    Negative test:
-    When override_date exists and is earlier than pub_date,
-    anomaly_override_conflict must take precedence.
-    """
-    product = make_input(
-        tags=["preorder"],
-        in_preorder_collection=True,
-        date_tags=[FUTURE_DATE],
-        pub_date=FUTURE_DATE,
-        override_date=PAST_DATE,
-        inventory=0,
-    )
-    result = classify_preorder_product(product)
-
-    assert result.status == "anomaly_override_conflict"
-    assert result.anomaly_type == "anomaly_override_conflict"

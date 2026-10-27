@@ -97,7 +97,6 @@ def _detect_anomaly(
         and not product.has_active_hold
         and effective_pub_date is not None
         and effective_pub_date < date.today()
-        and product.override_date is None
         and (not product.date_tags or product.pub_date == max(product.date_tags))
     ):
         return ClassificationResult(
@@ -128,39 +127,14 @@ def _detect_anomaly(
             effective_pub_date=effective_pub_date,
         )
 
-    # Phase 2.3: anomaly_override_conflict
-    if product.override_date is not None:
-        # Case 1: override earlier than pub_date
-        if product.pub_date is not None and product.override_date < product.pub_date:
-            return ClassificationResult(
-                status="anomaly_override_conflict",
-                anomaly_type="anomaly_override_conflict",
-                effective_pub_date=effective_pub_date,
-            )
-
-        # Case 2: override earlier than latest date_tag
-        if product.date_tags and product.override_date < max(product.date_tags):
-            return ClassificationResult(
-                status="anomaly_override_conflict",
-                anomaly_type="anomaly_override_conflict",
-                effective_pub_date=effective_pub_date,
-            )
-
-        # Case 3: override in the past while pub_date is in the future
-        if (
-            product.pub_date is not None
-            and product.override_date < date.today()
-            and product.pub_date > date.today()
-        ):
-            return ClassificationResult(
-                status="anomaly_override_conflict",
-                anomaly_type="anomaly_override_conflict",
-                effective_pub_date=effective_pub_date,
-            )
+    # Phase 2.3 (anomaly_override_conflict) was REMOVED in rev2 Move 1e.
+    # The override metafield is retired: its values were folded into pub_date on
+    # 2026-10-27, so the three conflict cases (override earlier than pub_date,
+    # earlier than the latest date tag, or past while pub_date is future) can no
+    # longer arise. pub_date is the single source of truth (decision D1).
 
     # Phase 2.4: anomaly_pubdate_conflict
-    # If pub_date disagrees with latest date_tag (regardless of override existence,
-    # since override conflicts are handled in Phase 2.3)
+    # If pub_date disagrees with latest date_tag
     if product.pub_date is not None and product.date_tags:
         latest_tag = max(product.date_tags)
 
@@ -173,8 +147,7 @@ def _detect_anomaly(
 
     # Phase 2.5: anomaly_multi_date_conflict
     if (
-        product.override_date is None
-        and product.pub_date is None
+        product.pub_date is None
         and len(product.date_tags) >= 2
     ):
         return ClassificationResult(
@@ -254,7 +227,6 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
             in_preorder_collection: bool
             date_tags: List[date]
             pub_date: Optional[date]
-            override_date: Optional[date]
             inventory: int
 
     RETURNS
@@ -276,10 +248,9 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
 
     1. EFFECTIVE PUB DATE RESOLUTION
        - Determine `effective_pub_date` using strict priority:
-            1) override_date
-            2) pub_date
-            3) earliest date_tag
-            4) None
+            1) pub_date
+            2) latest date_tag
+            3) None
        - Validate date ordering
        - Detect pubdate conflicts (anomaly_pubdate_conflict)
 
@@ -289,7 +260,6 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
         • anomaly_missing_tag
         • anomaly_missing_collection
         • anomaly_pubdate_conflict
-        • anomaly_override_conflict
         • anomaly_multi_date_conflict
         • anomaly_inventory_contradiction
         • anomaly_stale_collection  — pub date passed, still in Preorder collection
@@ -304,7 +274,7 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
           - in_preorder_collection
           - preorder tag
           - any future date_tag
-          - pub_date or override_date in the future
+          - pub_date in the future
 
     4. HISTORICAL PREORDER
        Valid only when:
@@ -326,7 +296,6 @@ def classify_preorder_product(product: ClassificationInput) -> ClassificationRes
     effective_pub_date = resolve_effective_pub_date(
         date_tags=product.date_tags,
         pub_date=product.pub_date,
-        override_date=product.override_date,
     )
 
     # ----------------------------------------------------------------------------------

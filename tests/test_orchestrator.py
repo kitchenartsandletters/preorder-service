@@ -5,9 +5,8 @@ resulting DB state.
 
 What each test pins (current behavior, verified against orchestrator.py):
 - a classification is persisted to preorder.product_status;
-- the DB override (preorder.product_overrides) WINS over the Shopify
-  metafield override (`override_date_raw`) — the dual-source behavior that
-  rev2 Move 1 must fold and then retire (see DOCS_STATUS E3);
+- (the dual-source override behaviour these once pinned was retired in
+  Move 1e: values were folded into pub_date on 2026-10-27);
 - `has_inventory_arrival` is looked up from preorder.inventory_arrival and
   changes the result (delayed import vs stale collection);
 - batch_reclassify continues past a product that genuinely raises.
@@ -59,31 +58,6 @@ def test_classification_is_persisted(fake_supabase):
     assert row["engine_version"] == "test-v"
 
 
-def test_db_override_wins_over_metafield_override(fake_supabase):
-    fake_supabase.seed(
-        "preorder", "product_overrides", [{"product_id": 1, "override_date_raw": "2099-06-01"}]
-    )
-    product = make_product(pub_date_raw=None, override_date_raw="2099-01-01")
-
-    result = classify_and_persist_product(
-        supabase=fake_supabase, product_metadata=product, engine_version="test-v"
-    )
-
-    assert result.effective_pub_date == date(2099, 6, 1)
-    row = _status_row(fake_supabase, 1)
-    assert row["effective_pub_date"] == "2099-06-01"
-    # The DB value also replaces the metafield value in the persisted snapshot.
-    assert row["metadata_snapshot"]["override_date"] == "2099-06-01"
-
-
-def test_metafield_override_used_when_no_db_override(fake_supabase):
-    product = make_product(pub_date_raw=None, override_date_raw="2099-01-01")
-
-    result = classify_and_persist_product(
-        supabase=fake_supabase, product_metadata=product, engine_version="test-v"
-    )
-
-    assert result.effective_pub_date == date(2099, 1, 1)
 
 
 def test_past_dated_title_in_collection_is_stale_without_a_hold(fake_supabase):
