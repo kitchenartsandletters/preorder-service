@@ -1,6 +1,6 @@
 # intl-solo — International cart isolation
 
-**Status:** PR 1 (read side) in review. Owner-approved design, 2026-11-09.
+**Status:** PR 1 (read side) merged and its migration applied 2026-11-09. PR 2 (write side) in review. Owner-approved design, 2026-11-09.
 
 ## Why
 
@@ -51,8 +51,13 @@ workflow is the post-order backstop.
 - `preorder.vw_intl_solo_inputs`: raw inputs; state is derived in
   `services/intl_solo_service.py` (pure, tested)
 
-Migration: `db/migrations/2026_11_create_intl_solo_state.sql`. It doesn't touch
-`vw_preorder_products`, so it is independent of the pending Move 1g view rewrite.
+Migrations:
+- `db/migrations/2026_11_create_intl_solo_state.sql`: tables and view. Applied 2026-11-09.
+  It doesn't touch `vw_preorder_products`, so it is independent of the pending Move 1g
+  view rewrite.
+- `db/migrations/2026_11_intl_solo_rls.sql`: RLS on with no policies, `service_role`-only
+  grants, and `security_invoker` on the view. Applied 2026-11-09, except section 4
+  (append-only log), which is pending.
 
 ## Display states
 
@@ -75,10 +80,35 @@ a hand-tagged test title, shows as `tag_unexpected`.
 - `GET /intl-solo`: derived state per product plus summary counts
   (`?include_not_applicable=true` lists every product)
 - `GET /intl-solo/log`: audit log (`?product_id=`, `?limit=`)
+- `POST /intl-solo/{product_id}/clear`: body `{basis: "received" | "guaranteed", reason, changed_by}`
+- `POST /intl-solo/{product_id}/restore`: body `{reason, changed_by}`. Undoes a clearance
+- `POST /intl-solo/{product_id}/force-on`: body `{reason, changed_by}`. Restricts a non-preorder
+- `POST /intl-solo/reconcile`: body `{apply, confirm, product_ids, changed_by}`. A dry run by
+  default. Applying needs `confirm: "apply"`. The plan restricts pending titles (this is the
+  backfill), re-adds missing tags, and removes tags from cleared titles. A stray tag with no
+  decision behind it (such as a test title) is reported, never removed.
 
-Write endpoints (clear, restore, force_on, reconcile) arrive in PR 2. Auto-tagging
-and the drift sweep arrive in PR 3. Tag writes will use `tagsAdd`/`tagsRemove`,
-never `productUpdate`, which replaces the whole tag list.
+Errors: 400 bad input, 404 unknown product, 409 action not allowed in the current state,
+502 Shopify refused a tag write.
+
+Every action is validated against the same `ALLOWED_ACTIONS` table the dashboard renders
+from, and every action is logged.
+
+### Write order: fail toward restricting
+
+The decision and the Shopify tag can't be written atomically, so each action orders them so
+that a failure part-way leaves the title **restricted**:
+
+- **Restricting** (restore, force_on, reconcile): add the tag, then record the decision. If
+  Shopify refuses, nothing is recorded.
+- **Clearing**: record the decision, then remove the tag. If Shopify refuses, the title stays
+  restricted at checkout and shows as drift until reconcile retries.
+
+Tag writes use `tagsAdd`/`tagsRemove`, never `productUpdate`, which replaces the whole tag
+list. Both are idempotent.
+
+Auto-tagging new preorders after reclassification, and the scheduled drift sweep, arrive in
+PR 3.
 
 ## Rollout order
 
