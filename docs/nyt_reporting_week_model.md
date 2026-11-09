@@ -5,7 +5,7 @@ reporting weeks work, written down because the ambiguity between the two "weeks"
 has caused repeated confusion and at least one near-miss double-report. When
 anything about "this week" in NYT reporting is unclear, this doc is the tiebreak.
 
-Last updated: 2026-09-28
+Last updated: 2026-11-09
 
 ---
 
@@ -49,6 +49,22 @@ sales_start, sales_end = _sales_week_bounds()      # sales week   (Sep 20 – 26
 - The CSV is generated for the **sales week**. Preorder inclusion uses pub date
   in the sales week. **This is correct** and matches the model above.
 
+## `nyt_report_log` is keyed by the sales week
+
+Every writer to `preorder.nyt_report_log` keys rows by the **sales week**
+(`week_start`/`week_end` = the reported Sunday–Saturday week, matching the CSV
+filename `nyt_report_sales_week_<week_end>.csv`): `nyt_reporter._write_log`,
+`nyt_reporter._already_uploaded`, `/nyt/regenerate`, and — since 2026-11-09 —
+`nyt_notifier`. The notifier inserts a placeholder (`upload_status='error'`,
+`notified_at` set) on the sales-week row when it emails, which the reporter's
+upsert overwrites a couple of hours later; if the row already exists it only
+sets `notified_at` and never touches `upload_status`. Before that fix the
+notifier keyed its placeholder by the **cycle** week, so the reporter never
+overwrote it and the dashboard showed a stray `error` row for the cycle week
+(first observed 2026-11-09, row for Nov 8–14 alongside the real Nov 1–7
+success). A row whose dates are a cycle week, not a completed sales week, is
+always an orphan.
+
 ## The known defect: `release_report_week_start` can disagree with the CSV
 
 **Symptom:** a title correctly included in a sales-week CSV can carry a
@@ -68,6 +84,14 @@ So `release_report_week_start` currently means "the week the queue click
 happened in," **not** "the sales-week report this title appears in." Two titles
 in the *same* filed CSV can have different `release_report_week_start` values
 depending on which day each was queued.
+
+The notifier's title lookup (`nyt_notifier._fetch_queued_titles`) still filters
+on `release_report_week_start` within the cycle week, so whether it emails at
+all depends on when titles were queued. On 2026-11-09 nine titles (pub Nov 1–6)
+were released at 11:13 UTC Monday and stamped `2026-11-08`, so the notifier
+found them; in weeks where titles were queued before the cycle week began it
+finds nothing and stays silent, even though the reporter (which takes the whole
+unreported queue) includes them. Fix alongside the stamping below.
 
 ## Operating rule until the defect is fixed
 
