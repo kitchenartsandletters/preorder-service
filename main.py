@@ -11,6 +11,7 @@ from routes.admin_pubdate import router as admin_pubdate_router
 from routes.admin_shipping import router as admin_shipping_router
 from routes.admin_tagger import router as admin_tagger_router
 from routes.admin_nyt import router as admin_nyt_router
+from routes.admin_intl_solo import router as admin_intl_solo_router
 
 
 app = FastAPI(title="preorder-service")
@@ -62,6 +63,9 @@ app.include_router(admin_tagger_router, prefix="/admin/preorders", tags=["admin_
 
 # admin NYT report API
 app.include_router(admin_nyt_router, prefix="/admin/preorders", tags=["admin_nyt"])
+
+# admin intl-solo API (international cart isolation; read-only in PR 1)
+app.include_router(admin_intl_solo_router, prefix="/admin/preorders", tags=["admin_intl_solo"])
 
 @app.get("/healthz")
 def healthz(): return {"ok": True}
