@@ -1,6 +1,6 @@
 # intl-solo — International cart isolation
 
-**Status:** Live since 2026-11-10 (backfill applied; 13 titles restricted). PRs 1 and 2 merged; the tag-confirmation change is in review. Owner-approved design, 2026-11-09.
+**Status:** Live since 2026-11-10 (backfill applied; 13 titles restricted). PRs 1, 2 and the tag-confirmation change merged; automation (PR 3) in review. Owner-approved design, 2026-11-09.
 
 ## Why
 
@@ -118,8 +118,25 @@ that a failure part-way leaves the title **restricted**:
 Tag writes use `tagsAdd`/`tagsRemove`, never `productUpdate`, which replaces the whole tag
 list. Both are idempotent.
 
-Auto-tagging new preorders after reclassification, and the scheduled drift sweep, arrive in
-PR 3.
+## Automation
+
+**Automation only ever restricts.** It restricts new preorders and re-adds a missing tag.
+It never clears a title or removes a tag; lifting a restriction is always a person's
+decision. A bug here can cost a sale, never let a mixed international order through.
+
+- **After reclassification.** `services/reclassification_service.reclassify_single_product`
+  calls `intl_solo_actions.auto_restrict` once the product is classified. That covers the
+  `products/update` and inventory webhooks, the pub-date transition job and the pub-date
+  admin route. A preorder with no decision is restricted (`basis: auto_preorder`,
+  `changed_by: auto`); a restricted title missing its tag gets it back. It never raises, so
+  it can't break the webhook. The tag write fires another `products/update`, whose
+  reclassification finds the title restricted and tagged and does nothing.
+- **Scheduled sweep.** `python jobs/run.py --job intl_solo_sweep` (add `--dry-run` to
+  preview) catches anything a missed webhook left behind. It applies only `restrict` and
+  `tag_add`. Tag removals and stray tags are listed under `needs_person` in its JSON
+  summary, for someone to handle in the dashboard.
+- **Kill switch.** `INTL_SOLO_AUTO_TAG=off` stops both. The dashboard and the manual
+  reconcile endpoint keep working.
 
 ## Rollout order
 
@@ -128,3 +145,5 @@ PR 3.
 3. Apply the backfill. **International enforcement goes live at this step**,
    because the Cart Lock rule is already active on `intl-solo`.
 4. Turn on the Flow backstop.
+5. Schedule the sweep (a Railway cron service running
+   `python jobs/run.py --job intl_solo_sweep`; hourly is plenty).

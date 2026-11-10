@@ -39,6 +39,7 @@ from jobs.order_tagger import run as run_order_tagger
 # 1. Imports (alongside other job imports):
 from jobs.nyt_notifier import run as run_nyt_notifier
 from jobs.nyt_reporter import run as run_nyt_reporter
+from jobs.intl_solo_sweep import run as run_intl_solo_sweep
 
 
 UTC = timezone.utc
@@ -103,6 +104,9 @@ async def dispatch(args) -> Dict[str, Any]:
     if args.job == "nyt_reporter":
         return await run_nyt_reporter(limit=args.limit, dry_run=args.dry_run)
 
+    if args.job == "intl_solo_sweep":
+        return await run_intl_solo_sweep(dry_run=args.dry_run)
+
     raise ValueError(f"Unknown job: {args.job}")
 
 
@@ -112,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--job",
         required=True,
-        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition", "order_tagger", "nyt_notifier", "nyt_reporter"],
+        choices=["commitment_ledger", "lifecycle_snapshotter", "ledger_reconciliation", "pub_date_transition", "order_tagger", "nyt_notifier", "nyt_reporter", "intl_solo_sweep"],
         help="Job to run",
     )
 
