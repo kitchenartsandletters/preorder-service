@@ -1,6 +1,9 @@
 # intl-solo — International cart isolation
 
-**Status:** Live since 2026-11-10 (backfill applied; 13 titles restricted). PRs 1, 2 and the tag-confirmation change merged; automation (PR 3) in review. Owner-approved design, 2026-11-09.
+**Status:** Complete and live since 2026-11-10. All layers are in place: theme messaging,
+Cart Lock enforcement, dashboard controls, automation, and the Shopify Flow backstop.
+Owner-approved design, 2026-11-09. Built in preorder-service #52, #53, #54, #55 and
+admin-dashboard #114 plus its modal-close fix.
 
 ## Why
 
@@ -28,8 +31,29 @@ Tested 2026-11-09: a single title and multiple copies are allowed; a title plus
 another book, two different tagged titles, and an address changed from US to UK
 are all blocked; express checkout is blocked. US orders are allowed.
 
-Theme messaging (product page, add to cart, cart) is courtesy only. A Shopify Flow
-workflow is the post-order backstop.
+## The other layers
+
+Cart Lock is the enforcement. The rest either warns customers earlier or catches what
+gets through.
+
+- **Theme (courtesy only).** `assets/custom.js` checks the cart before an international
+  add-to-cart and blocks a mix, naming the titles in a modal. The cart drawer and cart page
+  show a notice and disable checkout. Product pages show a one-line note to international
+  visitors, from `localization.country` in `main-product.liquid`. Products expose
+  `intlSolo` and `title` in their `product-variant-data` JSON (`main-product.liquid`,
+  `product-grid-item.liquid`). Every failure fails open, because Cart Lock is the authority.
+  This replaced the old hardcoded Noma / On Eating logic.
+- **Shopify Flow (post-order backstop).** It catches an order that got past Cart Lock.
+  - *Detect intl solo preorder violations*: on Order created, Run code flags a shipping
+    country other than the US, an `intl-solo` product, and more than one distinct product.
+    It tags the order `intl-solo-violation`, holds any fulfillment orders that already
+    exist, and emails letters@kitchenartsandletters.com.
+  - *Hold intl solo violation fulfillments*: on Fulfillment order ready to fulfill, it
+    holds anything tagged `intl-solo-violation`. This covers fulfillment orders created
+    after the first workflow ran.
+
+  Market orders can't be split without voiding prepaid duties, so a flagged order is
+  **cancelled in full** and the customer is asked to reorder separately.
 
 ## Lifecycle (independent of the domestic preorder lifecycle)
 
@@ -59,8 +83,7 @@ Migrations:
   grants, and `security_invoker` on the view. Applied 2026-11-09, including section 4
   (append-only log).
 - `db/migrations/2026_11_intl_solo_tag_confirmation.sql`: `tag_confirmed` /
-  `tag_confirmed_at` on the decision row, plus the view. **Apply before deploying** the
-  code that writes them.
+  `tag_confirmed_at` on the decision row, plus the view. Applied 2026-11-10.
 
 ## Display states
 
@@ -138,12 +161,43 @@ decision. A bug here can cost a sale, never let a mixed international order thro
 - **Kill switch.** `INTL_SOLO_AUTO_TAG=off` stops both. The dashboard and the manual
   reconcile endpoint keep working.
 
-## Rollout order
+## Operations
 
-1. Run the backfill as a dry run and review the list of titles it would tag.
-2. Ship the theme messaging.
-3. Apply the backfill. **International enforcement goes live at this step**,
-   because the Cart Lock rule is already active on `intl-solo`.
-4. Turn on the Flow backstop.
-5. Schedule the sweep (a Railway cron service running
-   `python jobs/run.py --job intl_solo_sweep`; hourly is plenty).
+- **Daily use** is the dashboard: Preorders > Release Management. Restricted titles show
+  🌐 Intl solo, and the *International — Decision Due* panel lists titles past their pub
+  date without stock, early arrivals, titles ready to clear, and any tag drift. *Intl…* on a
+  row clears or restores a title, with a required reason.
+- **Sweep** runs hourly as the Railway cron service `intl-solo-sweep`
+  (`python jobs/run.py --job intl_solo_sweep`). It needs the same variables as the other
+  cron services, because `jobs/run.py` imports every job at startup. Its JSON summary lists
+  anything that needs a person under `needs_person`.
+- **Pausing automation:** set `INTL_SOLO_AUTO_TAG=off` on the web service (webhook
+  auto-tagging) and on `intl-solo-sweep`. Restrictions already in place stay enforced.
+- **Bulk product edits:** `auto_restrict` runs inside every reclassification and can add a
+  tag write. Set `INTL_SOLO_AUTO_TAG=off` on the web service for the duration of any bulk
+  edit (see DOCS_STATUS Amendment A1 / gate G5), then turn it back on and let the hourly
+  sweep catch up. The sweep also covers lost webhooks, per Amendment A2.
+- **Turning enforcement off entirely:** disable the Cart Lock rule. Tags and decisions stay
+  as they are, so turning it back on resumes where it left off.
+- **Manual reconcile** (dry run first):
+  `POST /admin/preorders/intl-solo/reconcile` with `{}`, then
+  `{"apply": true, "confirm": "apply", "changed_by": "<name>"}`.
+
+## Rollout (completed 2026-11-10)
+
+1. Dry-run backfill reviewed: 13 titles.
+2. Theme messaging published.
+3. Backfill applied, which is when international enforcement went live. 13 restricted, 0
+   failures, 0 drift.
+4. Dashboard controls shipped (admin-dashboard #114).
+5. Automation shipped (#55). The `intl-solo-sweep` cron service is scheduled and has run
+   cleanly.
+6. Shopify Flow backstop set up (the two workflows above).
+
+## Possible follow-ups
+
+- If cancellations from Flow turn out to be frequent, look at where orders get past Cart
+  Lock before adding more automation.
+- Phase 1 isolates every preorder title individually. Grouping compatible titles (for
+  example, the same release week) was deliberately left out, and would need a policy
+  decision first.
