@@ -24,6 +24,12 @@ async def reclassify_single_product(
         engine_version=engine_version,
     )
 
+    # International cart isolation: restrict a new preorder (or re-add a
+    # missing intl-solo tag) as soon as it is classified. Never raises and
+    # never clears a restriction; see services/intl_solo_actions.auto_restrict.
+    from services.intl_solo_actions import auto_restrict
+    await auto_restrict(supabase, shopify_client, metadata.product_id)
+
     return ReclassifyResponse(
         product_id=metadata.product_id,
         status=result.status,

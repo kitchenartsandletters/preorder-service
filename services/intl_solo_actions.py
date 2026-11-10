@@ -35,8 +35,9 @@ allowed.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from services import intl_solo_service as svc
 from services.hold_service import today_et
@@ -385,7 +386,8 @@ def build_plan(supabase, product_ids: Optional[List[int]] = None) -> List[Dict[s
 
 async def reconcile(supabase, client, apply: bool = False, confirm: Optional[str] = None,
                     product_ids: Optional[List[int]] = None,
-                    changed_by: Optional[str] = None) -> Dict[str, Any]:
+                    changed_by: Optional[str] = None,
+                    only: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """
     Dry-run by default: returns the plan and changes nothing.
 
@@ -393,7 +395,12 @@ async def reconcile(supabase, client, apply: bool = False, confirm: Optional[str
     is the backfill, and it turns on international enforcement for every
     restricted title, because the Cart Lock rule is already live on the tag.
     report_only items are never acted on.
+
+    `only` limits which plan actions are applied; the rest are reported as
+    "skipped". The scheduled sweep uses it to apply only the restricting
+    actions (see AUTO_PLANS).
     """
+    allowed = set(only) if only is not None else None
     plan = build_plan(supabase, product_ids)
     counts: Dict[str, int] = {}
     for item in plan:
@@ -410,6 +417,9 @@ async def reconcile(supabase, client, apply: bool = False, confirm: Optional[str
     results = []
     for item in plan:
         pid, action = item["product_id"], item["plan"]
+        if allowed is not None and action not in allowed:
+            results.append({**item, "result": "skipped", "errors": None})
+            continue
         try:
             if action == PLAN_RESTRICT:
                 errors = await add_tag(client, pid)
@@ -446,3 +456,92 @@ async def reconcile(supabase, client, apply: bool = False, confirm: Optional[str
     failed = sum(1 for r in results if r["result"] in ("failed", "error"))
     return {"applied": True, "count": len(results), "counts": counts,
             "failed": failed, "results": results}
+
+
+# ──────────────────────────────────────────────
+# Automation (PR 3): auto-tag after reclassification, scheduled sweep
+# ──────────────────────────────────────────────
+#
+# Automation only ever RESTRICTS: it restricts new preorders and re-adds a
+# missing tag. It never clears a title or removes a tag. Lifting a
+# restriction is always a person's decision (the dashboard, or reconcile
+# called by hand), so a bug or a bad snapshot here can only cost a sale,
+# never let a mixed international order through.
+
+# Plans the sweep applies on its own; everything else is reported only.
+AUTO_PLANS = frozenset({PLAN_RESTRICT, PLAN_TAG_ADD})
+
+AUTO_ACTOR = "auto"
+
+
+def auto_tag_enabled() -> bool:
+    """Kill switch: set INTL_SOLO_AUTO_TAG=off to stop both automations."""
+    return os.getenv("INTL_SOLO_AUTO_TAG", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+async def auto_restrict(supabase, client, product_id: int, source: str = "reclassify") -> Optional[str]:
+    """
+    Called after a product is reclassified. Restricts a new preorder that has
+    no decision yet, or re-adds the tag to a restricted title that lost it.
+    Returns the action taken ("restrict" | "tag_add"), or None.
+
+    Never raises: a failure here must not break reclassification, which runs
+    inside the products/update webhook. The sweep retries anything missed.
+
+    Idempotent and loop-safe: the tag write fires another products/update
+    webhook, whose reclassification finds the title restricted and tagged
+    and does nothing.
+    """
+    if not auto_tag_enabled():
+        return None
+    try:
+        row = load_row(supabase, product_id)
+        if row is None:
+            return None
+        derived = svc.derive_state(row, as_of=today_et())
+        action = plan_for(derived)
+        if action not in AUTO_PLANS:
+            return None
+
+        errors = await add_tag(client, product_id)
+        if action == PLAN_RESTRICT and not errors:
+            _write_state(supabase, product_id, "restricted", "auto_preorder", None, AUTO_ACTOR,
+                         tag_confirmed=True)
+        elif action == PLAN_TAG_ADD and not errors:
+            _confirm_tag(supabase, product_id, True)
+
+        _log(supabase, product_id, action,
+             from_state=derived["display_state"],
+             to_state="restricted" if action == PLAN_RESTRICT else None,
+             basis="auto_preorder" if action == PLAN_RESTRICT else None,
+             changed_by=AUTO_ACTOR, success=not errors,
+             details={"title": derived["title"], "source": source}, errors=errors)
+        if errors:
+            logger.error(f"[intl-solo] auto {action} refused by Shopify for {product_id}: {errors}")
+            return None
+        logger.info(f"[intl-solo] auto {action} for {product_id} ({source})")
+        return action
+    except Exception as exc:
+        logger.error(f"[intl-solo] auto-restrict failed for {product_id}: {exc}")
+        return None
+
+
+async def sweep(supabase, client, dry_run: bool = False) -> Dict[str, Any]:
+    """
+    Scheduled backstop for missed webhooks. Applies only AUTO_PLANS
+    (restrict pending preorders, re-add missing tags); reports, but never
+    applies, tag removals and stray tags. Those need a person.
+    """
+    if not auto_tag_enabled():
+        return {"applied": False, "disabled": True, "count": 0, "counts": {}}
+    if dry_run:
+        out = await reconcile(supabase, client)
+    else:
+        out = await reconcile(supabase, client, apply=True, confirm=APPLY_CONFIRMATION,
+                              changed_by=AUTO_ACTOR, only=AUTO_PLANS)
+    items = out.get("results") or out.get("plan") or []
+    out["needs_person"] = [
+        {k: i[k] for k in ("product_id", "title", "plan", "display_state", "drift")}
+        for i in items if i["plan"] not in AUTO_PLANS
+    ]
+    return out
