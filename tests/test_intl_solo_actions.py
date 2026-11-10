@@ -247,3 +247,47 @@ async def test_reconcile_apply_failure_records_no_decision():
 async def test_reconcile_can_be_limited_to_products():
     out = await actions.reconcile(reconcile_db(), FakeShopify(), product_ids=[3, 4])
     assert {i["product_id"] for i in out["plan"]} == {3, 4}
+
+
+# ── Confirmed tag writes ──────────────────────────────────────────
+
+async def test_restrict_records_confirmed_tag():
+    db = db_with(view_row(state="cleared", basis="guaranteed", reason="r",
+                          intl_solo_tag_present=False))
+    await actions.restore(db, FakeShopify(), 1, "Mistake")
+    s = state_of(db)
+    assert s["tag_confirmed"] is True and s["tag_confirmed_at"]
+
+
+async def test_clear_records_confirmed_removal():
+    db = db_with(view_row())
+    db.seed("preorder", "intl_solo_state", [{"product_id": 1, "state": "restricted",
+                                              "basis": "auto_preorder", "tag_confirmed": True}])
+    await actions.clear(db, FakeShopify(), 1, "guaranteed", "Confirmed")
+    s = state_of(db)
+    assert s["state"] == "cleared"
+    assert s["tag_confirmed"] is False and s["tag_confirmed_at"]
+
+
+async def test_clear_shopify_failure_leaves_confirmation_alone():
+    db = db_with(view_row())
+    db.seed("preorder", "intl_solo_state", [{"product_id": 1, "state": "restricted",
+                                              "basis": "auto_preorder", "tag_confirmed": True,
+                                              "tag_confirmed_at": "2027-01-01T00:00:00+00:00"}])
+    with pytest.raises(actions.IntlSoloShopifyError):
+        await actions.clear(db, FakeShopify(fail=True), 1, "guaranteed", "Confirmed")
+    s = state_of(db)
+    # Tag is still on in Shopify, and the record still says so.
+    assert s["tag_confirmed"] is True
+
+
+async def test_reconcile_records_confirmations():
+    db = reconcile_db()
+    db.seed("preorder", "intl_solo_state", [
+        {"product_id": 3, "state": "restricted", "basis": "auto_preorder"},
+        {"product_id": 4, "state": "cleared", "basis": "received", "reason": "r"},
+    ])
+    await actions.reconcile(db, FakeShopify(), apply=True, confirm="apply")
+    assert state_of(db, 1)["tag_confirmed"] is True   # restrict (backfill)
+    assert state_of(db, 3)["tag_confirmed"] is True   # tag_add
+    assert state_of(db, 4)["tag_confirmed"] is False  # tag_remove
