@@ -182,22 +182,48 @@ def load_row(supabase, product_id: int) -> Optional[Dict[str, Any]]:
         "reason": None,
         "changed_by": None,
         "state_updated_at": None,
+        "tag_confirmed": None,
+        "tag_confirmed_at": None,
     }
 
 
 def _write_state(supabase, product_id: int, state: str, basis: str,
-                 reason: Optional[str], changed_by: Optional[str]) -> None:
-    supabase.schema(svc.SCHEMA).table(STATE_TABLE).upsert(
-        {
-            "product_id": product_id,
-            "state": state,
-            "basis": basis,
-            "reason": reason,
-            "changed_by": changed_by,
-            "updated_at": _now(),
-        },
-        on_conflict="product_id",
-    ).execute()
+                 reason: Optional[str], changed_by: Optional[str],
+                 tag_confirmed: Optional[bool] = None) -> None:
+    """
+    Upsert the decision. Pass tag_confirmed only when Shopify has just
+    accepted a tag write, so the row records what the tag now is.
+    """
+    now = _now()
+    row = {
+        "product_id": product_id,
+        "state": state,
+        "basis": basis,
+        "reason": reason,
+        "changed_by": changed_by,
+        "updated_at": now,
+    }
+    if tag_confirmed is not None:
+        row["tag_confirmed"] = tag_confirmed
+        row["tag_confirmed_at"] = now
+    supabase.schema(svc.SCHEMA).table(STATE_TABLE).upsert(row, on_conflict="product_id").execute()
+
+
+def _confirm_tag(supabase, product_id: int, present: bool) -> None:
+    """
+    Record that Shopify accepted a tag write, on an existing decision row.
+    Lets the dashboard show the tag correctly before the products/update
+    webhook refreshes the classification snapshot (see
+    intl_solo_service.effective_tag). Best effort: a failure here only means
+    a few seconds of apparent drift.
+    """
+    try:
+        supabase.schema(svc.SCHEMA).table(STATE_TABLE).update({
+            "tag_confirmed": present,
+            "tag_confirmed_at": _now(),
+        }).eq("product_id", product_id).execute()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error(f"[intl-solo] tag confirmation failed for {product_id}: {exc}")
 
 
 def _log(supabase, product_id: int, action: str, *, from_state: Optional[str] = None,
@@ -257,6 +283,8 @@ async def clear(supabase, client, product_id: int, basis: str,
 
     _write_state(supabase, product_id, "cleared", basis, reason, changed_by)
     errors = await remove_tag(client, product_id)
+    if not errors:
+        _confirm_tag(supabase, product_id, False)
     _log(supabase, product_id, "clear", from_state=from_state, to_state="cleared",
          basis=basis, reason=reason, changed_by=changed_by, success=not errors,
          details={"title": ctx["row"].get("title")}, errors=errors)
@@ -284,7 +312,8 @@ async def _restrict(supabase, client, product_id: int, action: str, basis: str,
             "restricted at checkout.",
             errors,
         )
-    _write_state(supabase, product_id, "restricted", basis, reason, changed_by)
+    _write_state(supabase, product_id, "restricted", basis, reason, changed_by,
+                 tag_confirmed=True)
     _log(supabase, product_id, action, from_state=from_state, to_state="restricted",
          basis=basis, reason=reason, changed_by=changed_by, details={"title": title})
     return {"product_id": product_id, "action": action, "basis": basis,
@@ -385,17 +414,22 @@ async def reconcile(supabase, client, apply: bool = False, confirm: Optional[str
             if action == PLAN_RESTRICT:
                 errors = await add_tag(client, pid)
                 if not errors:
-                    _write_state(supabase, pid, "restricted", "auto_preorder", None, changed_by)
+                    _write_state(supabase, pid, "restricted", "auto_preorder", None, changed_by,
+                                 tag_confirmed=True)
                 _log(supabase, pid, "restrict", from_state=item["display_state"],
                      to_state="restricted", basis="auto_preorder", changed_by=changed_by,
                      success=not errors, details={"title": item["title"], "source": "reconcile"},
                      errors=errors)
             elif action == PLAN_TAG_ADD:
                 errors = await add_tag(client, pid)
+                if not errors:
+                    _confirm_tag(supabase, pid, True)
                 _log(supabase, pid, "tag_add", changed_by=changed_by, success=not errors,
                      details={"title": item["title"], "source": "reconcile"}, errors=errors)
             elif action == PLAN_TAG_REMOVE:
                 errors = await remove_tag(client, pid)
+                if not errors:
+                    _confirm_tag(supabase, pid, False)
                 _log(supabase, pid, "tag_remove", changed_by=changed_by, success=not errors,
                      details={"title": item["title"], "source": "reconcile"}, errors=errors)
             else:

@@ -114,6 +114,46 @@ def _as_et_date(value: Any) -> Optional[date]:
     return dt.astimezone(ET).date()
 
 
+def _as_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt
+
+
+def effective_tag(row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    What the Shopify tag is, as best we know.
+
+    Two sources: the classification snapshot (product_status tags, refreshed
+    when Shopify's products/update webhook is processed) and the last tag
+    write this module made that Shopify confirmed (tag_confirmed /
+    tag_confirmed_at). Whichever is newer wins.
+
+    Without this, every action showed a few seconds of false drift: the
+    decision changed at once, but the snapshot only caught up when the
+    webhook arrived. A snapshot taken after the write still overrides it, so
+    a later change made in Shopify admin shows as drift as before.
+    """
+    snapshot = bool(row.get("intl_solo_tag_present"))
+    confirmed = row.get("tag_confirmed")
+    confirmed_at = _as_datetime(row.get("tag_confirmed_at"))
+    snapshot_at = _as_datetime(row.get("snapshot_at"))
+    if confirmed is not None and confirmed_at is not None and (
+        snapshot_at is None or confirmed_at > snapshot_at
+    ):
+        return {"present": bool(confirmed), "source": "confirmed_write"}
+    return {"present": snapshot, "source": "snapshot"}
+
+
 def is_candidate(row: Dict[str, Any]) -> bool:
     """True when an untracked product should become restricted."""
     return (
@@ -136,14 +176,16 @@ def derive_state(row: Dict[str, Any], as_of: Optional[date] = None) -> Dict[str,
     Returns the row's identifying fields plus:
       display_state     one of DISPLAY_STATES
       expected_tag      bool, what the Shopify tag should be
-      tag_present       bool, the tag as of snapshot_at
+      tag_present       bool, the tag as best known (see effective_tag)
+      tag_source        "snapshot" | "confirmed_write"
       drift             None | DRIFT_TAG_MISSING | DRIFT_TAG_UNEXPECTED
       arrival_date_et   date of first positive inventory in ET, or None
       allowed_actions   list of action names for the dashboard
     """
     as_of = as_of or today_et()
     state = row.get("state")
-    tag_present = bool(row.get("intl_solo_tag_present"))
+    tag = effective_tag(row)
+    tag_present = tag["present"]
     pub_date = _as_date(row.get("pub_date"))
     arrival_date = _as_et_date(row.get("first_positive_inventory_at"))
 
@@ -199,6 +241,7 @@ def derive_state(row: Dict[str, Any], as_of: Optional[date] = None) -> Dict[str,
         "display_state": display,
         "expected_tag": expected,
         "tag_present": tag_present,
+        "tag_source": tag["source"],
         "drift": drift,
         "allowed_actions": list(ALLOWED_ACTIONS[display]),
     }
