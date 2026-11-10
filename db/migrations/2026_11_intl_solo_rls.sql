@@ -6,7 +6,7 @@
 --   Sections 1–3 were APPLIED on 2026-11-09, together with the create
 --   migration, via the Supabase connector. This file records them so the
 --   repo matches the database.
---   Section 4 (append-only log) is NOT YET APPLIED.
+--   Section 4 (append-only log) was APPLIED on 2026-11-10.
 --
 -- MODEL: backend only. The service uses the service_role key, which bypasses
 -- RLS. RLS on with no policies denies anon and authenticated entirely. This
