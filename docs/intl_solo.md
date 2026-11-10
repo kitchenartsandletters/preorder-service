@@ -1,6 +1,6 @@
 # intl-solo — International cart isolation
 
-**Status:** PR 1 (read side) merged and its migration applied 2026-11-09. PR 2 (write side) in review. Owner-approved design, 2026-11-09.
+**Status:** Live since 2026-11-10 (backfill applied; 13 titles restricted). PRs 1 and 2 merged; the tag-confirmation change is in review. Owner-approved design, 2026-11-09.
 
 ## Why
 
@@ -56,8 +56,11 @@ Migrations:
   It doesn't touch `vw_preorder_products`, so it is independent of the pending Move 1g
   view rewrite.
 - `db/migrations/2026_11_intl_solo_rls.sql`: RLS on with no policies, `service_role`-only
-  grants, and `security_invoker` on the view. Applied 2026-11-09, except section 4
-  (append-only log), which is pending.
+  grants, and `security_invoker` on the view. Applied 2026-11-09, including section 4
+  (append-only log).
+- `db/migrations/2026_11_intl_solo_tag_confirmation.sql`: `tag_confirmed` /
+  `tag_confirmed_at` on the decision row, plus the view. **Apply before deploying** the
+  code that writes them.
 
 ## Display states
 
@@ -71,9 +74,17 @@ Migrations:
 | `cleared` | Cleared, with basis | restore |
 | `not_applicable` | Not a preorder, no decision | force_on |
 
-**Drift:** the tag as of the last classification snapshot disagrees with the
-decision (`tag_missing` / `tag_unexpected`). A stray tag on a non-preorder, such as
-a hand-tagged test title, shows as `tag_unexpected`.
+**Drift:** the Shopify tag disagrees with the decision (`tag_missing` /
+`tag_unexpected`). A stray tag on a non-preorder, such as a hand-tagged test title,
+shows as `tag_unexpected`.
+
+The tag comes from whichever is newer: the classification snapshot (refreshed when
+Shopify's `products/update` webhook is processed), or the last tag write Shopify
+accepted from this module (`tag_confirmed`, `tag_confirmed_at`). Without the second
+source, every action showed a few seconds of false drift until the webhook caught
+up. A snapshot taken after the write still wins, so a change made in Shopify admin
+shows as drift as before. Each derived row reports `tag_source` (`snapshot` or
+`confirmed_write`).
 
 ## Endpoints (under `/admin/preorders`)
 

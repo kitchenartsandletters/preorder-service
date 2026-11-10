@@ -73,6 +73,7 @@ SOURCE_FILES = [
 # GraphQL operation without being in SOURCE_FILES or here.
 EXCLUDED_SOURCE_FILES = {
     "weekly_release_engine.py": "dead earlier phase, being retired (DOCS_STATUS Landmine 1)",
+    "services/intl_solo_actions.py": "mutations only (tagsAdd / tagsRemove); this smoke test exercises read queries",
 }
 
 OPERATION_RE = re.compile(r"^\s*query\s+(\w+)\s*[({]")

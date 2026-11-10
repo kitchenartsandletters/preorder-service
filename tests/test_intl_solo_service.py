@@ -240,3 +240,45 @@ def test_list_log_filters_and_orders():
     ])
     entries = svc.list_log(db, product_id=1)
     assert [e["id"] for e in entries] == [3, 1]
+
+
+# ── Confirmed tag writes vs the classification snapshot ───────────
+
+def test_confirmed_write_newer_than_snapshot_wins():
+    # Just restored: decision and confirmed write say tagged, but the snapshot
+    # predates the write. No false "tag missing".
+    d = derive(intl_solo_tag_present=False,
+               snapshot_at="2027-01-11T12:00:00+00:00",
+               tag_confirmed=True, tag_confirmed_at="2027-01-11T12:00:05+00:00")
+    assert d["tag_present"] is True
+    assert d["tag_source"] == "confirmed_write"
+    assert d["drift"] is None
+
+
+def test_confirmed_clear_newer_than_snapshot_wins():
+    d = derive(state="cleared", basis="received", reason="Stock in",
+               intl_solo_tag_present=True,
+               snapshot_at="2027-01-11T12:00:00+00:00",
+               tag_confirmed=False, tag_confirmed_at="2027-01-11T12:00:05+00:00")
+    assert d["drift"] is None
+
+
+def test_newer_snapshot_overrides_confirmed_write():
+    # Someone removed the tag in Shopify admin after our write: real drift.
+    d = derive(intl_solo_tag_present=False,
+               snapshot_at="2027-01-11T12:05:00+00:00",
+               tag_confirmed=True, tag_confirmed_at="2027-01-11T12:00:05+00:00")
+    assert d["tag_source"] == "snapshot"
+    assert d["drift"] == svc.DRIFT_TAG_MISSING
+
+
+def test_confirmed_write_without_snapshot_time_is_trusted():
+    d = derive(intl_solo_tag_present=False, snapshot_at=None,
+               tag_confirmed=True, tag_confirmed_at="2027-01-11T12:00:05+00:00")
+    assert d["tag_present"] is True
+
+
+def test_no_confirmed_write_uses_snapshot():
+    d = derive(intl_solo_tag_present=False)
+    assert d["tag_source"] == "snapshot"
+    assert d["drift"] == svc.DRIFT_TAG_MISSING
