@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-11-24
+Last updated: 2026-11-24 (reissue lifecycle)
 
 | Document | Status |
 |---|---|
@@ -299,6 +299,52 @@ select * from preorder.tracking where processing_notes like 'repair 2026-09-21:%
    still one short each. Snapshots are write-once, and none were modified.
    Decide on recomputation with Landmine 14, which affects the same snapshots.
 
+### I2 — Septime (English): open-line reconciliation (investigated 2026-11-24)
+
+Read-only. Nothing was written. Run because the reissue (Landmine 20) needed a
+defensible fulfilment count and three different numbers were in circulation.
+
+**The numbers that disagreed:**
+
+| Figure | Value | Where it comes from |
+|---|---|---|
+| All-time clean net | 25 | sum of `orders/create` + `orders/fulfilled` + `refunds/create` |
+| Net since run 1 closed | 19 | the same sum restricted to after 2026-03-31 |
+| Shopify inventory | −17 | the product's current oversell position |
+
+All three are wrong as a fulfilment count, because netting hides the shape.
+Per `(order_id, line_item_id)` the ledger holds **29 open lines, 29 units**,
+plus **4 orphan fulfillments** (a `−1` with no matching create) which is how 29
+nets down to 25.
+
+**The 29 open lines, by era:**
+
+| Era | Lines | Note |
+|---|---|---|
+| 2025-12-02 → 2026-03-30 | 10 | run 1; the March reconciler judged 9 of these phantom |
+| 2026-04-06, 2026-05-11 | 2 | mid-year stragglers |
+| 2026-11-16 → 2026-11-22 | 17 | the reissue campaign |
+
+**The reissue campaign is 17 units, and that matches Shopify's −17 exactly.**
+That is the demand the reprint has to cover.
+
+The other **12 lines are unverified**, not owed. The reconciliation run of
+2026-03-31 recorded `ledger_open_qty 9, shopify_open_qty 0, delta −9` for this
+product — i.e. Shopify already considered them settled while the ledger did
+not. That is the Landmine 13 signature: a lost `orders/cancelled` or
+`refunds/create` leaves a line open forever. The 4 orphan fulfillments are the
+same loss in the other direction, creates that never arrived.
+
+**Do not fulfil from the ledger.** Run
+`scripts/verify_open_commitment_lines.py --product-id 6598890029189` first: it
+reads each order from the Shopify Admin API and labels every open line `open`,
+`cancelled`, `fulfilled`, `refunded`, `line_missing` or `order_missing`. Only
+`open` is a customer waiting. The script writes nothing.
+
+**Still unresolved after that:** whatever the script labels stale is ledger
+residue needing a repair pass, and it belongs with the Landmine 19 work, which
+reads order history from the Admin API for the same reason.
+
 ---
 
 ## The authoritative auth contract (verified against `shopify_token.py`)
@@ -407,11 +453,15 @@ historical, 5 active, 2 `anomaly_stale_collection`, 2 early stock). The gap is
 probably drafts or unpublished products. Diff the product IDs when convenient —
 it is not blocking either side.
 
-Two of the six oversold titles it surfaced are ours and both are
-`anomaly_stale_collection`: *A Very Serious Cookbook: Contra Wildair* (−88,
-released 2018-10-12, stock never received) and *Septime (English)* (−17,
-released 2025-09-30). They are the live instances of the cleanup queue that
-Landmine 19's sibling work will have to clear.
+Two of the six oversold titles it surfaced were ours: *A Very Serious Cookbook:
+Contra Wildair* (−88) and *Septime (English)* (−17). Both read
+`anomaly_stale_collection` when C1 was written, and **neither was a cleanup
+case**. They are limited reissues of out-of-print editions, taking preorders
+now. Both were re-dated to their reissue dates on 2026-11-24 and are
+`active_preorder`; see Landmine 20. The classification contract above is
+unchanged by this and handles them correctly — a consumer keying on
+`active_preorder` ignores them, which is right, because their negative
+inventory is preorder demand and not a backorder.
 
 ---
 
@@ -711,8 +761,153 @@ rather than `public.webhook_logs` — a different exercise with a different risk
 profile, and worth its own dry run. R1's outstanding order #80284 (net +2)
 belongs to this pass.
 
+**Also in scope for that pass:** the stale open lines I2 found on Septime (12
+unverified lines, plus 4 orphan fulfillments with no matching create). Same
+cause, same remedy — read the orders from the Admin API. The sweep that should
+have caught them has not run since 2026-03-31; see Landmine 21.
+`scripts/verify_open_commitment_lines.py` already does the read-only
+per-product version of this check and is the natural starting point.
+
 **Until then:** open commitments on long-settled historical titles may read a
 few units high, and those 64 snapshots will not close on their own.
+
+### Landmine 20: one lifecycle per product, so a reissue has nowhere to live (found 2026-11-24)
+
+**The case.** Two out-of-print titles are being reissued on a limited basis and
+are taking preorders now: *A Very Serious Cookbook: Contra Wildair* (88 units in
+eleven days) and *Septime (English)* (17 units). Both are the **same Shopify
+product and the same ISBN** as the original run — the publisher is reprinting an
+edition, not issuing a new one. So one product now carries two commercial runs.
+
+**The model has no room for that.** `preorder.lifecycle_snapshot` is
+`PRIMARY KEY (product_id)`: one lifecycle row per product, forever.
+
+**Three consequences, in order of severity.**
+
+1. **The release engine silently zeroes the reissue's presale cohort.**
+   `services/weekly_release_engine.fetch_banked_presales` prefers
+   `lifecycle_snapshot.presale_commitment_total` and falls back to the ledger
+   **only when the snapshot is missing**. Septime's snapshot exists and holds
+   `0` (run 1 closed 2026-03-31), so a queued reissue release reads **0 banked
+   presales** against real demand. Contra Wildair has no snapshot, falls back to
+   the ledger, and is correct. The hazard is latent: candidates come from
+   `preorder.release_state`, so it fires only once a person queues the title.
+2. **The snapshot never regenerates.** `fetch_snapshot_candidates` filters
+   `and ls.product_id is null`, so a product that already has a row is never
+   reconsidered. Run 2 gets no frozen cohort, ever.
+3. **The ledger has no run boundary either**, so the cohort cannot simply be
+   recomputed. `compute_presale_commitment_total` sums every clean topic before
+   ET midnight of the pub date with no notion of which run an order belongs to.
+   Archiving Septime's closed row and letting the snapshotter rebuild would
+   freeze **25** — run-1 stragglers included — not the 17 that is the reissue.
+   See I2 for how far apart those numbers are.
+
+**No data-loss risk.** `insert_snapshot` is `on conflict (product_id) do
+nothing` and `mark_closed` writes only `where lifecycle_closed_at is null`, so
+run 1's record cannot be clobbered by anything the snapshotter does.
+
+**What was done 2026-11-24, and why it was enough for now.** Owner ruling:
+`effective_pub_date` carries the **reissue availability date**, with the
+original publication date left on the record in the date tag and in
+`pubdate_history.old_effective_pub_date`. Both titles were re-dated to future
+dates (Contra Wildair 2026-12-07 by a direct Shopify edit, Septime 2026-12-16
+through `PUT /admin/preorders/{id}/pub-date` so it recorded as `ui_change` with
+a write intent). A future pub date classifies both `active_preorder` through the
+standard path, which cleared `anomaly_stale_collection` and removed a dashboard
+instruction to pull them from the Preorder collection — which would have killed
+the incentive the campaigns run on. **No hold was needed**; the explicit-hold
+mechanism only matters while the date is in the past.
+
+**Standing constraints until the model changes:**
+- **Do not queue Septime for release.** Banked presales read 0.
+- Septime will never get a run-2 snapshot, so its reissue has no frozen cohort.
+- Open commitment in the ledger stays correct for both, so dashboards reading
+  current commitment are fine.
+- Both products' description HTML may still state the old date: the bulk
+  importer writes a release-date sentence into the body, and the pub-date
+  endpoint does not touch it (it warns about this in its response).
+
+#### Proposed model: run-scoped lifecycle (NOT built — do not build yet)
+
+Owner ruling 2026-11-24: reissues are **likely but unconfirmed** as a recurring
+line. Fix these two by hand, record the design, build when a third title
+appears. Recorded now because the shape was worked out while the evidence was in
+front of us, and it will not be next time.
+
+The requirement that is easy to get wrong: **a run needs a start date, and
+cohort computation must be scoped by it.** A per-run snapshot row alone does not
+help, because the ledger query is what mixes the runs together.
+
+Sketch:
+- `preorder.preorder_run (product_id, run_no, run_started_on, run_label, ...)`,
+  with `run_no` ascending per product and `run_started_on` as the boundary.
+- `lifecycle_snapshot` keyed `(product_id, run_no)` instead of `product_id`.
+  Existing rows migrate to `run_no = 1`.
+- `compute_presale_commitment_total` additionally scoped
+  `occurred_at >= run_started_on`, so a cohort contains only its own run.
+- `fetch_snapshot_candidates` tests for a snapshot of the **current** run, not
+  of the product.
+- `fetch_banked_presales` reads the current run's row, and its ledger fallback
+  takes the same run scoping.
+- Classification needs no change: a run is open or not by date and inventory as
+  it is today.
+
+**Open design questions**, none answered:
+- Is a reissue NYT-reportable at all? `vw_reportable_preorders` requires
+  `status = 'historical_preorder'` and computes the report week from
+  `effective_pub_date`; a reprint of an old edition may not qualify, in which
+  case runs after the first want excluding rather than re-reporting.
+- What opens run 2 — a person, or the pub date moving forward past a closed
+  run? A date edit is the observable event, which argues for deriving it, but
+  deriving it would have retroactively opened runs during the Move 1d fold.
+- Do the 12 unverified Septime lines (I2) belong to run 1 or to nothing?
+
+**Interaction with rev2 Move 2 — this one is a hard ordering constraint.**
+Move 2 strips the date tags. With `effective_pub_date` now carrying the reissue
+date, the **original publication date would have no home**: it would survive
+only incidentally in `pubdate_history`. For a bookstore that is a real
+bibliographic loss. **A field for original publication date has to exist before
+Move 2 runs**, whether or not the run model is built.
+
+### Landmine 21: the reconciliation sweep is dead, and reviving it as-is double-counts (found 2026-11-24)
+
+**It has not run since 2026-03-31.** `preorder.reconciliation_log` holds 915
+rows, newest `2026-03-31 14:31:40`, **zero in the last 30 days**. Amendment A2
+states the nightly sweep is "required, not optional" and "a correctness
+requirement for Move 1", precisely because webhook delivery to preorder-service
+is lossy (Landmine 13). It has been absent for nearly eight months, which is why
+I2's stale lines are still sitting in the ledger.
+
+**Reviving it unchanged would double-count.** On 2026-03-31 the sweep logged
+`action: adjusted` **five times** for Septime, each run recomputing
+`ledger_open_qty 9, shopify_open_qty 0, delta −9`. It never saw its own
+correction, because open quantity is computed over the clean topics only
+(`orders/create`, `orders/fulfilled`, `refunds/create`) and the correction is
+written as `reconciliation.adjustment`, which that set excludes. Only one
+adjustment row survived, and **not because anything forbids a second**: the
+unique indexes on `commitment_ledger` cover the four order topics,
+`tracking_id`, positive commitments, and `(topic, event_id, line_item_id,
+product_id, delta_qty, ...)`. Nothing constrains `reconciliation.adjustment` by
+product. The five runs shared an event identity and deduped on the idempotency
+index; a fresh run would not.
+
+Estate-wide there are **93 adjustment rows, −154 units, exactly one per
+product** — all from that single day. Re-running the sweep today would re-adjust
+every one of those 93 products, taking the total to roughly −308.
+
+**Before the sweep is turned back on**, one of these has to be true:
+1. open quantity includes `reconciliation.adjustment`, so an adjusted product
+   reconciles to zero delta and is left alone; or
+2. a unique index constrains the adjustment topic per product, so a second
+   write cannot land.
+
+(1) is the real fix; (2) is a backstop that would mask a genuine second
+adjustment. Do both, with (1) load-bearing.
+
+**Also noticed, cosmetic:** `commitment_positive_once` and
+`ledger_unique_positive_commitment` are byte-identical unique indexes on
+`(order_id, line_item_id) where delta_qty > 0`. One is redundant. Harmless, but
+it doubles the write cost on the hottest path in the ledger.
 
 ### Resolved
 
