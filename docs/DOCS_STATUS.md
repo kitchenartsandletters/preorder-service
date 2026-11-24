@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-10-17
+Last updated: 2026-11-24
 
 | Document | Status |
 |---|---|
@@ -134,7 +134,8 @@ which is built on the corrected facts. Counts are 2026-09-19 snapshots.
   - `anomaly_missing_collection`
   - the `pdp_cleanup` early-stock path
 
-  Every one needs a ruling in Move 3.
+  Every one needs a ruling in Move 3. **Until Move 3 lands, the tag must not be
+  removed from released titles** — see cross-service contract C1.
 - **E6 — The engine and wiring touch-list is incomplete** (§2.3, §2.5, §2.6).
   - `anomaly_stale_collection` also reads `override_date` and `date_tags`.
   - `classification/types.py` holds a stub `classify_preorder_product`.
@@ -323,6 +324,94 @@ the reference:
   **overrides** the code default.
 - `SHOP_URL` must be the `.myshopify.com` host (e.g. `castironbooks.myshopify.com`),
   not the custom domain. Use `normalize_domain()` from `shopify_token.py`.
+
+---
+
+## Cross-service contracts
+
+What other repos in the estate may and may not rely on. Stated here because
+these have each been proposed and nearly actioned by a sibling service that
+could not see the coupling from its own side.
+
+### C1 — the `preorder` tag is retained on purpose and is NOT a cleanup target (ruled 2026-11-24)
+
+**Proposed by supply-chain-service, 2026-11-24:** its backorder tracker skips
+titles tagged `preorder`, so it was missing genuinely oversold released books.
+It offered to bulk-remove the tag from the 204 tagged titles whose release date
+has passed. **Declined.** The tracker change was accepted instead.
+
+**Why the tag stays.** It is the only signal distinguishing *a book that was a
+preorder* from ordinary backlist stock. Collection membership — not the tag —
+means "currently selling as a preorder," and collection membership is what
+drives the rewards system. A correctly-released title therefore looks exactly
+like the state that invited the cleanup: tag present, collection removed, date
+passed. `_is_historical_preorder` **requires** the tag (errata E5 lists all six
+gated predicates).
+
+**What removal would have cost**, measured 2026-11-24:
+- 202 products reclassify `historical_preorder` → `not_a_preorder_product`.
+- `vw_reportable_preorders` filters on `status = 'historical_preorder'`, so all
+  **188 rows empty out** — that is NYT bestseller-list reporting eligibility.
+- **80 open lifecycle snapshots** sit on `historical_preorder` titles and would
+  be orphaned mid-flight, on top of the Landmine 19 residue.
+- The 2 titles still in the collection would flip to `anomaly_missing_tag` —
+  the opposite of cleanup.
+
+Nothing in this repo writes or removes the `preorder` tag (the only
+`tagsAdd`/`tagsRemove` calls are for `intl-solo`), so it will never clean
+itself up, and the apparent mess is not drift. Retirement is Move 3's job, and
+Move 3 introduces the DB-owned replacement signal **before** the tag comes off.
+
+**The contract for consumers.** Do not key preorder behaviour on the tag or on
+tag-plus-date. Read `preorder.product_status.status`, which already folds in the
+date, the collection and the hold:
+
+| Classification | Treatment |
+|---|---|
+| `active_preorder`, `early_stock_arrival` | ignore — negative inventory here is the preorder mechanism |
+| `historical_preorder` | released; normal stock rules apply |
+| `anomaly_stale_collection` | released but still in the collection; **ours to fix** — report it to us |
+| `hold_active = true` (`vw_preorder_products`) | ignore regardless of date — an explicit hold deliberately keeps the title selling past release |
+
+The hold column is the case a date-based rule cannot see. There were no live
+holds on 2026-11-24, but the mechanism is in production.
+
+**A date rule also false-positives on release day.** Titles release with
+negative inventory by design and stock lands at or shortly after the date. On
+2026-11-24, *Biscuits* sat at −87 with a release date of that day; a plain
+"date has passed" rule reports it as an 87-unit backorder the next morning. The
+discriminator is `first_positive_inventory_at`: stock arrived **and** inventory
+still negative means a real reorder need; no arrival recorded means the title is
+still awaiting its first shipment.
+
+### C2 — two traps in reading our tables (recorded 2026-11-24)
+
+Both were found while answering C1 and both would have silently produced wrong
+numbers in a consumer.
+
+- **`vw_preorder_products.inventory` is `GREATEST(inventory, 0)`.** It can never
+  show a negative, so it is unusable for oversell depth. 9 tagged products had
+  negative inventory on 2026-11-24; the view showed 0 for every one of them.
+- **`product_status` is event-driven, not a live mirror.** 184 of the 211 tagged
+  rows were last classified more than two days earlier. Consumers should take
+  **classification** from us and **inventory** from Shopify.
+
+Also: `override_status` is dropped from `vw_preorder_products` and
+`vw_preorder_release_queue` by the staged Move 1g migration. Consumers must
+select named columns, not `*`, and must not bind to it.
+
+### Open thread
+
+supply-chain-service counted 215 tagged products; we classify 211 (202
+historical, 5 active, 2 `anomaly_stale_collection`, 2 early stock). The gap is
+probably drafts or unpublished products. Diff the product IDs when convenient —
+it is not blocking either side.
+
+Two of the six oversold titles it surfaced are ours and both are
+`anomaly_stale_collection`: *A Very Serious Cookbook: Contra Wildair* (−88,
+released 2018-10-12, stock never received) and *Septime (English)* (−17,
+released 2025-09-30). They are the live instances of the cleanup queue that
+Landmine 19's sibling work will have to clear.
 
 ---
 
