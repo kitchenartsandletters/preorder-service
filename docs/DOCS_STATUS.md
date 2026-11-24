@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-11-24 (run-aware read layer)
+Last updated: 2026-11-24 (declared runs)
 
 | Document | Status |
 |---|---|
@@ -943,6 +943,69 @@ below makes the data correct.
 
 **It also quantified Landmine 19's other direction:** 699 orphan lines across 84
 titles, now queryable as `where orphan_lines > 0` instead of estimated.
+
+#### Declared runs, 2026-11-24: `preorder.preorder_run`
+
+**The derived signal was incomplete, and the owner spotted it.** It keys on a
+closed lifecycle whose pub date postdates its own closure, which caught Septime
+and **cannot** catch *A Very Serious Cookbook: Contra Wildair* — also a limited
+reissue, whose original run was 2018, before this system existed. No snapshot,
+nothing to derive from. Septime was visible only by the accident of having a
+recorded prior run.
+
+**Inference was measured and rejected.** The whole of `pubdate_history` holds 5
+forward date jumps over a year, across 3 products:
+
+| Title | Jump | `change_source` | Reissue? |
+|---|---|---|---|
+| Contra Wildair | 2018-10-12 → 2026-12-07, 2,978 d | `shopify_direct_edit` | yes |
+| Septime | 2021-10-20 → 2025-09-30, 1,441 d (×2) | `override_date`, `override_migration` | no — the retired override, then the Move 1d fold |
+| Septime | 2025-09-30 → 2026-12-16, 442 d | `ui_change` | yes |
+| Animal, Vegetable, Junk (pbk) | 2021-02-02 → 2022-04-26, 448 d | `shopify_pub_date` | **no — false positive** |
+
+Two of five are bookkeeping, one is a false positive on a
+`not_a_preorder_product`, and `change_source` cannot rescue the heuristic
+because the one genuine reissue is labelled `shopify_direct_edit` — what any
+unmanaged edit gets.
+
+**This repo settled the principle once already.** The inferred delayed-import
+hold was replaced on 2026-10-15 with an explicit, expiring hold, on the ruling
+that "that inference is wrong." A reissue is the same kind of thing: a
+commercial decision somebody makes, not a shape in the data.
+
+`db/migrations/2026_11_preorder_run.sql` adds
+**`preorder.preorder_run (product_id, run_no, run_started_on, label, note,
+predates_system)`** — run identity, the first half of the model below, without
+re-keying `lifecycle_snapshot`. `vw_run_state` became **declaration-first**:
+a declared run wins, the closed-lifecycle signal remains as a fallback so an
+undeclared reissue is still caught, and `run_source` says which
+(`declared` / `derived` / `none`).
+
+**`has_prior_closed_run` was broadened, not redefined.** It was only ever false
+for Contra Wildair because the prior run was invisible to us; that run happened
+and did close. The column now means what its name says, so **the dashboard
+badges both titles with no frontend change**.
+
+`predates_system` is the honest part: when a prior run predates the system,
+`prior_run_presale_total` and `prior_run_reported` are **NULL, not 0/false**.
+We cannot say that 2018 run went unreported — only that we have no record.
+
+**Scope (owner, 2026-11-24):** table and view only, rows declared in SQL. No
+admin endpoint until a third title needs one; holds got theirs the same way.
+
+**Verified after applying.** Both titles `run_source: declared`,
+`current_run_no: 2`, `has_prior_closed_run: true`. Contra Wildair:
+`prior_run_predates_system: true` with both prior-run figures null, and its own
+88 units unchanged. Septime: `prior_run_presale_total: 0`,
+`prior_run_reported: true`, 17 units unchanged — the ET-midnight boundary
+(2026-03-31 04:00 UTC) moved 11 hours earlier than the derived one
+(15:05 UTC) and changed nothing, since no clean-topic row falls between. View
+columns 1–16 are unchanged in position; 17–22 appended. 211 rows: 2 declared,
+0 derived, 209 none.
+
+**Unchanged by this:** a second run still has no frozen cohort, so
+`fetch_banked_presales` still reads 0 and **Septime must still not be queued
+for release.**
 
 #### Proposed model: run-scoped lifecycle (NOT built — do not build yet)
 

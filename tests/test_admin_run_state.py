@@ -25,8 +25,13 @@ PATH = "/admin/preorders/run-state"
 
 SEPTIME = 6598890029189
 CONTRA = 5238867361925
+BISCUITS = 7360655294597
 
-# The live rows, as vw_run_state returns them on 2026-11-24.
+# The live rows, as vw_run_state returns them on 2026-11-24, after
+# 2026_11_preorder_run.sql made the view declaration-first. Positions 1-16 are
+# unchanged from the view's first version; 17-22 were appended.
+#
+# Septime: a reissue whose prior run WAS recorded.
 SEPTIME_ROW = {
     "product_id": SEPTIME,
     "title": "Septime (English)",
@@ -35,7 +40,7 @@ SEPTIME_ROW = {
     "effective_pub_date": "2026-12-16",
     "has_prior_closed_run": True,
     "lifecycle_closed_at": "2026-03-31T15:05:04+00:00",
-    "current_run_started_at": "2026-03-31T15:05:04+00:00",
+    "current_run_started_at": "2026-03-31T04:00:00+00:00",
     "prior_run_presale_total": 0,
     "prior_run_reported": True,
     "current_run_open_lines": 17,
@@ -44,17 +49,25 @@ SEPTIME_ROW = {
     "current_run_reported": False,
     "orphan_lines": 0,
     "inventory_unclamped": -17,
+    "run_source": "declared",
+    "current_run_no": 2,
+    "prior_run_no": 1,
+    "prior_run_label": "original edition",
+    "prior_run_note": "First recorded order (backfill).",
+    "prior_run_predates_system": False,
 }
 
+# Contra Wildair: a reissue whose prior run (2018) PREDATES the system. It was
+# invisible to the derived signal, which is why declaration exists.
 CONTRA_ROW = {
     "product_id": CONTRA,
     "title": "A Very Serious Cookbook: Contra Wildair",
     "isbn": "9780714876023",
     "classification": "active_preorder",
     "effective_pub_date": "2026-12-07",
-    "has_prior_closed_run": False,
+    "has_prior_closed_run": True,
     "lifecycle_closed_at": None,
-    "current_run_started_at": None,
+    "current_run_started_at": "2026-11-13T05:00:00+00:00",
     "prior_run_presale_total": None,
     "prior_run_reported": None,
     "current_run_open_lines": 87,
@@ -63,13 +76,45 @@ CONTRA_ROW = {
     "current_run_reported": False,
     "orphan_lines": 0,
     "inventory_unclamped": -88,
+    "run_source": "declared",
+    "current_run_no": 2,
+    "prior_run_no": 1,
+    "prior_run_label": "original edition",
+    "prior_run_note": "Original publication. Predates this system.",
+    "prior_run_predates_system": True,
+}
+
+# An ordinary first-run title. 209 of the 211 rows look like this.
+BISCUITS_ROW = {
+    "product_id": BISCUITS,
+    "title": "Biscuits",
+    "isbn": "9780000000000",
+    "classification": "active_preorder",
+    "effective_pub_date": "2026-11-24",
+    "has_prior_closed_run": False,
+    "lifecycle_closed_at": None,
+    "current_run_started_at": None,
+    "prior_run_presale_total": None,
+    "prior_run_reported": None,
+    "current_run_open_lines": 82,
+    "current_run_open_units": 87,
+    "current_run_open_orders": 82,
+    "current_run_reported": False,
+    "orphan_lines": 0,
+    "inventory_unclamped": -87,
+    "run_source": "none",
+    "current_run_no": None,
+    "prior_run_no": None,
+    "prior_run_label": None,
+    "prior_run_note": None,
+    "prior_run_predates_system": False,
 }
 
 
 @pytest.fixture
 def fake_supabase():
     db = FakeSupabase()
-    db.seed("preorder", "vw_run_state", [SEPTIME_ROW, CONTRA_ROW])
+    db.seed("preorder", "vw_run_state", [SEPTIME_ROW, CONTRA_ROW, BISCUITS_ROW])
     return db
 
 
@@ -104,7 +149,7 @@ def test_body_is_a_bare_array_not_an_envelope(client):
     """Wrapping the rows in {"rows": [...]} would break the dashboard."""
     body = client.get(PATH).json()
     assert isinstance(body, list)
-    assert len(body) == 2
+    assert len(body) == 3
 
 
 def test_rows_reach_the_client_with_columns_untouched(client):
@@ -173,12 +218,45 @@ def test_current_run_reported_is_false_for_a_reissue_whose_prior_run_was_reporte
 
 
 def test_prior_run_columns_are_null_when_there_is_no_prior_run(client):
-    """Null rather than 0, so a consumer cannot render them as real figures."""
-    row = next(r for r in client.get(PATH).json() if r["product_id"] == CONTRA)
+    """Null rather than 0, so a consumer cannot render them as real figures.
+
+    Biscuits, not Contra Wildair: Contra Wildair became a declared reissue on
+    2026-11-24, so it is no longer an example of a first-run title.
+    """
+    row = next(r for r in client.get(PATH).json() if r["product_id"] == BISCUITS)
     assert row["has_prior_closed_run"] is False
+    assert row["run_source"] == "none"
     assert row["prior_run_presale_total"] is None
     assert row["prior_run_reported"] is None
     assert row["current_run_started_at"] is None
+    assert row["current_run_no"] is None
+
+
+def test_a_reissue_predating_the_system_reports_unknown_not_zero(client):
+    """Contra Wildair's original run was 2018. We cannot say it went unreported
+    or sold nothing — only that we have no record. Null, not 0/false.
+
+    This is the case the derived signal could never catch, and the reason
+    preorder_run exists.
+    """
+    row = next(r for r in client.get(PATH).json() if r["product_id"] == CONTRA)
+    assert row["has_prior_closed_run"] is True
+    assert row["run_source"] == "declared"
+    assert row["prior_run_predates_system"] is True
+    assert row["prior_run_presale_total"] is None
+    assert row["prior_run_reported"] is None
+    # Its own figures are unaffected: every unit postdates the reissue.
+    assert row["current_run_open_units"] == 88
+
+
+def test_both_reissues_are_badged_by_the_same_field(client):
+    """The dashboard keys its Reissue badge on has_prior_closed_run. Both
+    titles must satisfy it, whether their prior run was recorded or not.
+    """
+    body = {r["product_id"]: r for r in client.get(PATH).json()}
+    assert body[SEPTIME]["has_prior_closed_run"] is True
+    assert body[CONTRA]["has_prior_closed_run"] is True
+    assert body[BISCUITS]["has_prior_closed_run"] is False
 
 
 def test_inventory_is_not_clamped(client):
@@ -187,6 +265,7 @@ def test_inventory_is_not_clamped(client):
     assert {r["product_id"]: r["inventory_unclamped"] for r in body} == {
         SEPTIME: -17,
         CONTRA: -88,
+        BISCUITS: -87,
     }
 
 
