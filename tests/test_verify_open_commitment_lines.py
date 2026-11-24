@@ -263,6 +263,29 @@ def test_render_separates_real_demand_from_residue():
     assert "open" in out and "cancelled" in out
 
 
+def test_dotenv_is_not_loaded_at_import_time():
+    """`.env` must be read inside main(), not at module scope.
+
+    Importing this module happens in tests and could otherwise pull the
+    developer's real credentials into os.environ, and it is the same
+    import-time-config shape DOCS_STATUS Landmine 10 tracks.
+    """
+    import ast
+
+    tree = ast.parse(SCRIPT.read_text())
+    module_level_calls = [
+        node.value.func.id
+        for node in tree.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    ]
+    assert "load_dotenv" not in module_level_calls
+
+    # ...but it must be loaded somewhere, or the script cannot read .env at all.
+    assert "load_dotenv(" in SCRIPT.read_text()
+
+
 def test_render_counts_unknown_verdicts_too():
     lines = [verify.OpenLine(1, 10, 3, "2026-01-01T00:00:00+00:00", "unchecked", {})]
     out = verify.render(lines)

@@ -43,8 +43,9 @@ repair pass of its own — this script writes nothing.
 
 USAGE
 -----
-    export SHOP_URL=... SHOPIFY_CLIENT_ID=... SHOPIFY_CLIENT_SECRET=...
-    export SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+Reads the project-root `.env` (SHOP_URL, SHOPIFY_CLIENT_ID,
+SHOPIFY_CLIENT_SECRET, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY). Real
+environment variables win over the file, so an export still overrides.
 
     python scripts/verify_open_commitment_lines.py --product-id 6598890029189
     python scripts/verify_open_commitment_lines.py --product-id 6598890029189 \
@@ -304,10 +305,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     import httpx
+    from dotenv import load_dotenv
     from supabase import create_client
 
     from shopify_token import get_token_sync, normalize_domain
     from shopify_version import get_api_version
+
+    # Loaded here rather than at import so that importing this module (the
+    # tests do) has no side effect on os.environ. The explicit path means it
+    # works from any working directory, not just the repo root.
+    # override=False: a real exported variable beats the file.
+    load_dotenv(REPO / ".env", override=False)
 
     shop = os.getenv("SHOP_URL")
     supabase_url = os.getenv("SUPABASE_URL")
@@ -325,8 +333,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Not set: {', '.join(missing)}", file=sys.stderr)
         return 2
 
-    supabase = create_client(supabase_url, supabase_key)
-    rows = fetch_ledger_rows(supabase, args.product_id)
+    try:
+        supabase = create_client(supabase_url, supabase_key)
+        rows = fetch_ledger_rows(supabase, args.product_id)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except Exception as exc:
+        # A bare traceback is useless to an operator. The two live causes are a
+        # bad SUPABASE_URL and a disabled/rotated key; the postgrest client
+        # surfaces the latter as a confusing pydantic ValidationError.
+        print(
+            f"Could not read the ledger: {type(exc).__name__}: {exc}\n"
+            "Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY. A validation "
+            "error here usually means the key is wrong or disabled, not that "
+            "the data is malformed.",
+            file=sys.stderr,
+        )
+        return 2
+
     lines = compute_open_lines(rows)
 
     print(f"product_id={args.product_id}")
@@ -338,7 +363,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     domain = normalize_domain(shop)
     version = get_api_version()
-    token = get_token_sync()
+    try:
+        token = get_token_sync()
+    except Exception as exc:
+        print(
+            f"Could not get a Shopify token: {type(exc).__name__}: {exc}\n"
+            "Auth is the OAuth client-credentials grant: check SHOP_URL, "
+            "SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET. SHOPIFY_ACCESS_TOKEN "
+            "is retired and is not used here.",
+            file=sys.stderr,
+        )
+        return 2
+
     order_ids = sorted({l.order_id for l in lines})
     print(f"checking {len(order_ids)} order(s) in Shopify at {version}...")
 
