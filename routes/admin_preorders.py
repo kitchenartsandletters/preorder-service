@@ -123,6 +123,56 @@ def get_live_presale_metrics(ok: bool = Depends(require_admin_token)):
     return resp.data or []
 
 
+@router.get("/run-state")
+def get_run_state(
+    product_id: int | None = None,
+    ok: bool = Depends(require_admin_token),
+):
+    """
+    Run-aware read surface: preorder.vw_run_state.
+
+    Serves the view's rows UNCHANGED, as a plain list. The dashboard depends on
+    that shape — do not wrap it in an envelope or rename columns here.
+
+    Why it exists: preorder.lifecycle_snapshot is PRIMARY KEY (product_id), one
+    lifecycle per product forever (DOCS_STATUS Landmine 20). A limited reissue
+    is a SECOND commercial run on the same product and ISBN, so the prior run's
+    figures otherwise render as current. Septime (English) is the live case.
+
+    The columns that matter to a consumer:
+      - has_prior_closed_run  — this title is in a later run
+      - current_run_*         — scoped to the current run; for a title with no
+                                prior run they cover all history, so one
+                                template works for every row
+      - prior_run_*           — NULL unless there IS a prior run
+      - current_run_reported  — reported WITHIN the current run. Use this for a
+                                "Reported" badge, never `already_reported` from
+                                /products, which is "ever reported" and makes a
+                                reissue inherit the prior run's badge.
+      - inventory_unclamped   — real inventory; /products clamps to >= 0
+      - orphan_lines          — ledger residue (Landmine 19)
+
+    STILL TRUE despite this endpoint: a second run has no frozen cohort, so
+    weekly_release_engine.fetch_banked_presales reads 0 for such a title. Do not
+    queue Septime for release.
+
+    No ranging: the view carries its own `status <> 'not_a_preorder_product'`
+    filter and returns ~211 rows, well inside PostgREST's 1000-row default, as
+    with /products. If it ever approaches that, this needs explicit ranging —
+    an unranged select truncates silently, which has bitten this repo twice.
+    """
+    query = (
+        supabase
+        .schema("preorder")
+        .from_("vw_run_state")
+        .select("*")
+    )
+    if product_id is not None:
+        query = query.eq("product_id", product_id)
+
+    return query.execute().data or []
+
+
 @router.get("/upcoming")
 def get_upcoming_releases(ok: bool = Depends(require_admin_token)):
     """

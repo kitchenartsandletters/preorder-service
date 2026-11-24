@@ -246,6 +246,11 @@ class _SchemaScope:
     def table(self, name: str) -> _Query:
         return _Query(db=self._db, schema=self._schema, table=name)
 
+    # supabase-py treats from_() as an alias of table(). routes/admin_preorders.py
+    # uses from_() throughout, so without this the whole router is untestable.
+    def from_(self, name: str) -> _Query:
+        return self.table(name)
+
 
 class FakeSupabase:
     """In-memory supabase-py stand-in. See module docstring."""
@@ -262,6 +267,9 @@ class FakeSupabase:
     # `calls` with schema=None rather than crashing obscurely)
     def table(self, name: str) -> _Query:
         return _Query(db=self, schema=None, table=name)
+
+    def from_(self, name: str) -> _Query:
+        return self.table(name)
 
     # ---- test helpers ---------------------------------------------------
     def seed(self, schema: str, table: str, rows: List[Dict[str, Any]]) -> None:
