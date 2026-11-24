@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-11-24 (reissue lifecycle)
+Last updated: 2026-11-24 (R3 executed; Landmine 22)
 
 | Document | Status |
 |---|---|
@@ -328,12 +328,29 @@ nets down to 25.
 **The reissue campaign is 17 units, and that matches Shopify's −17 exactly.**
 That is the demand the reprint has to cover.
 
-The other **12 lines are unverified**, not owed. The reconciliation run of
-2026-03-31 recorded `ledger_open_qty 9, shopify_open_qty 0, delta −9` for this
-product — i.e. Shopify already considered them settled while the ledger did
-not. That is the Landmine 13 signature: a lost `orders/cancelled` or
-`refunds/create` leaves a line open forever. The 4 orphan fulfillments are the
-same loss in the other direction, creates that never arrived.
+The other **12 lines were stale**, not owed. Verified against the Shopify Admin
+API on 2026-11-24: all 12 came back **`fulfilled`** — orders #70810 through
+#80323 received their books. The ledger simply never recorded the fulfillments.
+
+**CORRECTION — the first diagnosis here was wrong.** These were initially read
+as lost `orders/cancelled` or `refunds/create` events, because the 2026-03-31
+reconciliation had recorded `ledger_open_qty 9, shopify_open_qty 0, delta −9`
+for this product and that is the Landmine 13 signature. The repair dry run
+showed otherwise. The 12 split across **two different causes**:
+
+| Fulfillments | Dates | Ledger state before R3 | Cause |
+|---|---|---|---|
+| 7 | 2025-12-02 → 2026-02-10 | no row at all | pre-log loss (Landmine 19) |
+| 5 | 2026-03-04 → 2026-05-11 | **sibling lines of the same order recorded**, Septime's dropped | the multi-line bug (Landmine 14) |
+
+`order_id` matched on all five of the second group, so those fulfillment events
+**did arrive and were processed**. Septime's line lost to another product's line
+under `ledger_tracking_unique`, which admits one ledger row per tracking row.
+Four of the five are dated after 2026-03-06 and therefore fell inside R2's
+window — see the gap recorded on Landmine 14.
+
+The 4 orphan fulfillments (a −1 with no create) are the same loss in the other
+direction and are **not** repaired; they belong to the Landmine 19 pass.
 
 **Do not fulfil from the ledger.** Run
 `scripts/verify_open_commitment_lines.py --product-id 6598890029189` first: it
@@ -341,9 +358,52 @@ reads each order from the Shopify Admin API and labels every open line `open`,
 `cancelled`, `fulfilled`, `refunded`, `line_missing` or `order_missing`. Only
 `open` is a customer waiting. The script writes nothing.
 
-**Still unresolved after that:** whatever the script labels stale is ledger
-residue needing a repair pass, and it belongs with the Landmine 19 work, which
-reads order history from the Admin API for the same reason.
+**Outcome:** repaired by R3, below. Septime's fulfilment count is **17**.
+
+### R3 — Septime missing fulfillments (executed 2026-11-24, the Landmine 19 pilot)
+
+**What was done.** 12 rows written to `preorder.tracking` at
+2026-11-24 18:32:20 UTC by `scripts/repair_missing_fulfillments.py --apply`,
+one per (fulfillment, line), from the I2 verification above. The standard
+builder derived 12 `commitment_ledger` rows from them, each `delta_qty = −1`.
+
+```sql
+select * from preorder.tracking where processing_notes like 'repair 2026-11-24: R3%';
+```
+
+**Result, verified after the builder ran:**
+
+| Measure | Before | After |
+|---|---|---|
+| Open lines | 29 (29 units) | **17 (17 units)** |
+| Clean net commitment | 25 | **13** |
+| Orphan fulfillments (unrepaired) | 4 | 4 |
+| Rows touching any other product | — | **0** |
+
+17 matches Shopify's −17 exactly.
+
+**Why it wrote tracking rows and not ledger rows:** the R1/R2 principle —
+`build_commitment_ledger.py` stays the only writer of `commitment_ledger`, so
+its per-topic unique indexes remain what makes double counting impossible.
+
+**Deliberate divergence from R2.** R2 stored the whole original order payload on
+each repair row, which works only because `ledger_tracking_unique` caps one
+ledger row per tracking row and `cl_unique_orders_fulfilled` rejects
+already-present lines, so successive tracking rows land successive lines.
+Correct, but it turns on insert ordering. R3 puts **exactly one line item** in
+each payload, so the mapping is deterministic. The payload is synthesized rather
+than replayed, because these fulfillments are absent from `public.webhook_logs`
+— which is why they were lost.
+
+**R3's rows are the only correctly-dated fulfillment rows in the table.** They
+carry the true fulfillment timestamp; every other row carries the order's
+creation time. See Landmine 22. Immaterial for these 12, all of which fall
+before Septime's 2026-12-16 pub date either way.
+
+**Idempotency proved in production.** The command was run twice. The second run
+reported `0 to write, 12 already in ledger` and wrote nothing, exercising both
+layers: the deterministic UUID5 `event_id` against `tracking`'s
+`(event_id, line_item_id)` constraint, and `cl_unique_orders_fulfilled`.
 
 ---
 
@@ -761,12 +821,18 @@ rather than `public.webhook_logs` — a different exercise with a different risk
 profile, and worth its own dry run. R1's outstanding order #80284 (net +2)
 belongs to this pass.
 
-**Also in scope for that pass:** the stale open lines I2 found on Septime (12
-unverified lines, plus 4 orphan fulfillments with no matching create). Same
-cause, same remedy — read the orders from the Admin API. The sweep that should
-have caught them has not run since 2026-03-31; see Landmine 21.
-`scripts/verify_open_commitment_lines.py` already does the read-only
-per-product version of this check and is the natural starting point.
+**The pilot for that pass has run.** Repair R3 cleared 12 stale lines on
+Septime (English) on 2026-11-24 — 7 of them this landmine's pre-log loss, 5 the
+multi-line bug. `scripts/verify_open_commitment_lines.py` (read-only) and
+`scripts/repair_missing_fulfillments.py` (dry run by default) are the two tools,
+and R3 is the worked example of using them. The sweep that should have caught
+this has not run since 2026-03-31; see Landmine 21.
+
+**Still in scope:** Septime's **4 orphan fulfillments** — a `−1` with no
+matching create, the same loss in the other direction — which R3 deliberately
+did not touch, plus whatever the same per-line check finds on the other 63
+titles. Note R2's selection gap recorded under Landmine 14: this pass must
+select per **line**, not per fulfillment, or it will repeat R2's miss.
 
 **Until then:** open commitments on long-settled historical titles may read a
 few units high, and those 64 snapshots will not close on their own.
@@ -860,7 +926,9 @@ Sketch:
 - What opens run 2 — a person, or the pub date moving forward past a closed
   run? A date edit is the observable event, which argues for deriving it, but
   deriving it would have retroactively opened runs during the Move 1d fold.
-- Do the 12 unverified Septime lines (I2) belong to run 1 or to nothing?
+- Septime's 12 stale lines turned out to be fulfilled run-1 orders (I2, R3), so
+  that question is settled. The live one: when run 2 opens, does the cohort
+  boundary need the run start date, the pub date, or both?
 
 **Interaction with rev2 Move 2 — this one is a hard ordering constraint.**
 Move 2 strips the date tags. With `effective_pub_date` now carrying the reissue
@@ -909,6 +977,61 @@ adjustment. Do both, with (1) load-bearing.
 `(order_id, line_item_id) where delta_qty > 0`. One is redundant. Harmless, but
 it doubles the write cost on the hottest path in the ledger.
 
+### Landmine 22: every fulfillment in the ledger is dated at order-creation time (found 2026-11-24)
+
+**Measured:** 7,830 of 7,830 `orders/fulfilled` ledger rows in the last 120 days
+carry an `occurred_at` **identical** to their line's `orders/create` row. Zero
+exceptions.
+
+**Mechanism.** `pick_occurred_at` tries candidates in order and for
+`orders/fulfilled` the first is the payload's top-level `created_at`. A real
+Shopify `orders/fulfilled` webhook **is an order object**, whose top-level
+`created_at` is when the ORDER was placed. So the fulfillment's own timestamp,
+which sits under `payload.fulfillment.created_at`, is never reached.
+
+**What this corrupts.** `lifecycle_snapshotter.compute_presale_commitment_total`
+freezes the presale cohort as the net of `orders/create`, `orders/fulfilled` and
+`refunds/create` with `occurred_at` before ET midnight of the pub date. Preorder
+fulfillments happen at or after the pub date — that is the whole model — but
+being dated at order time they land **inside** the cohort window and cancel
+their own creates.
+
+Across 123 closed snapshots: **2,175 creates before the boundary against −2,607
+fulfillments before it.** More shipped than ordered inside the window, which is
+impossible unless the dating is wrong. 63 of those 123 hold
+`presale_commitment_total = 0`, Septime among them despite a real 501-unit run.
+
+This is very probably the true cause of the note left open under R1, that "the 7
+historical titles' presale totals are still one short each." It is not one. It
+is most of the cohort.
+
+**Blast radius, checked rather than assumed:**
+
+| Surface | Affected? | Why |
+|---|---|---|
+| `lifecycle_snapshot.presale_commitment_total` | **yes** | the computation above |
+| `weekly_release_engine.fetch_banked_presales` | **yes** | prefers the snapshot |
+| `vw_reportable_preorders` | **no** | its presale CTE uses `orders/create`, `orders/paid`, `orders/cancelled`, `refunds/create`, `orders/create_backfill` — pointedly **not** `orders/fulfilled` |
+| `get_current_preorder_committed_qty` | **no** | no date boundary; sums all history |
+| `vw_preorder_products` commitment columns | **no** | same, no boundary |
+
+**NYT reporting quantities are therefore safe.** The damage is confined to the
+frozen cohort and what reads it.
+
+**Fix, when it is taken on:** reorder the `orders/fulfilled` candidates in
+`pick_occurred_at` so the fulfillment's own timestamp wins —
+`payload.fulfillment.created_at`, then `fulfilled_at`, and only then the
+top-level `created_at` as a last resort. A test should assert that an order
+object with both timestamps resolves to the fulfillment's.
+
+**Fixing it forward does not fix history.** The 7,830 existing rows stay
+mis-dated unless recomputed, and `lifecycle_snapshot` is write-once, so
+correcting the frozen cohorts is a separate decision — the same one left open
+under R1 and R2. Do not rebuild snapshots as a side effect of fixing the dating.
+
+Repair R3's 12 rows are the only correctly-dated fulfillment rows in the table,
+because that script supplies no top-level `created_at` on purpose.
+
 ### Resolved
 
 #### Landmine 14: multi-line fulfillments under-recorded — RESOLVED 2026-10-17 (PR #41 + repair R2)
@@ -944,6 +1067,20 @@ id comes from `order_id`. Verified in production 2026-10-16/17: order #88063
   sibling lines; the extras were absorbed by the unique indexes.
 - Scope was **preorder titles only**: 19,693 lines were missing in total, but
   the other ~18,000 are ordinary retail lines that nothing reads.
+
+**GAP FOUND 2026-11-24 — the R2 backfill is incomplete.** Repair R3 found 4
+multi-line fulfillments on Septime (English) dated 2026-03-29 to 2026-05-11,
+inside R2's window, where sibling lines of the same order were recorded and
+Septime's line was not. R2 should have caught them and did not. The likely
+reason is its **selection**: it appears to have looked for fulfillments wholly
+absent from the ledger rather than for absent *lines*, so a partially-recorded
+multi-line fulfillment looked already done. That is the exact shape of this
+landmine, which makes it an easy thing to miss.
+
+Consequences: the ~30% figure above is a floor, not a measurement; more
+multi-line residue is expected on other titles; and the full Landmine 19 pass
+must select per line, not per fulfillment. `scripts/repair_missing_fulfillments.py`
+already does, and R3 is its pilot.
 
 **Find the repair rows** (the marker says 2026-10-16; it was drafted the day
 before it ran):
