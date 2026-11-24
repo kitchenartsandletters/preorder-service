@@ -13,7 +13,7 @@ against the live system in this pass. It is not an endorsement. Prefer reading
 the code (`shopify_token.py`, `classification/engine.py`, the live Supabase
 views) over trusting an unaudited doc.
 
-Last updated: 2026-11-24 (R3 executed; Landmine 22)
+Last updated: 2026-11-24 (run-aware read layer)
 
 | Document | Status |
 |---|---|
@@ -892,6 +892,57 @@ mechanism only matters while the date is in the past.
 - Both products' description HTML may still state the old date: the bulk
   importer writes a release-date sentence into the body, and the pub-date
   endpoint does not touch it (it warns about this in its response).
+
+#### Partial mitigation shipped 2026-11-24: `preorder.vw_run_state`
+
+Septime made this landmine visible in the UI, which is what prompted the
+mitigation. Its dashboard row read **Live Presales 47, Est. Presales 454,
+Data Confidence "estimated", Reporting Status "Reported", `lifecycle_closed`
+true** — every one a run-1 fact, on a title that is an `active_preorder` with 17
+units committed to a reissue. Two fields were not merely stale but
+self-contradictory: `lifecycle_closed` true on an active preorder, and
+`arrival_timing` `early_arrival` for stock that landed **ten months before** the
+pub date. `Live Presales 47` is not even purely run-1: the cohort window in
+`vw_live_presale_metrics` is `[2026-02-11, pub_date)`, so re-dating the title to
+2026-12-16 **expanded** the window and pulled both runs into one figure.
+
+The danger was not cosmetic. A person seeing "Reported" beside an active
+preorder may queue it for release, and `fetch_banked_presales` prefers the
+closed snapshot's `presale_commitment_total` — which is **0**.
+
+`db/migrations/2026_11_run_aware_read_layer.sql` adds
+**`preorder.vw_run_state`**, which separates the two runs:
+
+| Column | Meaning |
+|---|---|
+| `has_prior_closed_run` | a closed lifecycle whose pub date now postdates its own closure — only possible if the title was re-dated for a new run |
+| `current_run_started_at` | the boundary the current-run figures are scoped from; null means all history |
+| `prior_run_presale_total`, `prior_run_reported` | **null unless there is a prior run**, so a consumer cannot show them as current by accident |
+| `current_run_open_lines` / `_units` / `_orders` | netted per **line**, scoped to the current run |
+| `current_run_reported` | reported *within* the current run — the field that stops a reissue inheriting the prior badge |
+| `orphan_lines` | negative-net lines: a fulfillment or refund with no create (Landmine 19 / I2) |
+| `inventory_unclamped` | the real inventory, not `GREATEST(x, 0)` (contract C2) |
+
+Verified on creation: Septime reads `has_prior_closed_run` true,
+`prior_run_reported` **true**, `current_run_reported` **false**, 17 open lines /
+17 units, `inventory_unclamped` −17. Contra Wildair, which has no prior run,
+reads 87 lines / 88 units with every prior-run column null. Both match the
+independent `verify_open_commitment_lines.py` run exactly. 211 rows, **1**
+title currently run-aware.
+
+**A new view rather than columns on `vw_preorder_products`**, because the staged
+Move 1g migration does `create or replace view preorder.vw_preorder_products`
+and would silently drop added columns the moment it is applied. A separate view
+is order-independent against that migration and reverses with one
+`drop view`.
+
+**What it does NOT fix.** A second run still has no frozen cohort, so
+`fetch_banked_presales` still reads 0 for Septime and **the instruction not to
+queue it for release stands**. This makes the read layer honest; the run model
+below makes the data correct.
+
+**It also quantified Landmine 19's other direction:** 699 orphan lines across 84
+titles, now queryable as `where orphan_lines > 0` instead of estimated.
 
 #### Proposed model: run-scoped lifecycle (NOT built — do not build yet)
 
